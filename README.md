@@ -1,9 +1,10 @@
 # Zilliz Cloud Load Test Tool
 
-A CLI tool for load testing Zilliz Cloud with configurable QPS and comprehensive metrics collection.
+A CLI tool for seeding and load testing Zilliz Cloud with configurable QPS and comprehensive metrics collection.
 
 ## Features
 
+- **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the upsert API
 - Configurable QPS levels (default: 100, 500, 1000 QPS)
 - Measures P95 and P99 latencies
 - Tracks recall accuracy from Zilliz Cloud responses
@@ -20,13 +21,36 @@ go build -o zilliz-loadtest
 
 ## Usage
 
-The tool uses an interactive CLI that prompts for each parameter:
+The tool uses an interactive CLI that starts with a menu:
 
 ```bash
 ./zilliz-loadtest
 ```
 
-You will be prompted to enter:
+### Menu Options
+
+1. **Seed the database**: Upsert 2 million 768-dimension vectors into your collection
+2. **Run a read query load test**: Perform load testing with configurable QPS levels
+
+### Seed Database
+
+When you choose option 1, you will be prompted to enter:
+
+1. **API Key** (required): Your Zilliz Cloud API key
+2. **Database URL** (required): Your Zilliz Cloud database URL
+3. **Collection Name** (required): The collection to seed
+4. **Confirmation**: Confirm before starting the seed operation
+
+The seed operation will:
+- Upsert 2,000,000 vectors of 768 dimensions
+- Use batches of 50,000 vectors for efficient insertion
+- Display progress and insertion rate
+- Assume autoID is enabled (no primary key required)
+- Assume no scalar fields (only vector data)
+
+### Load Test
+
+When you choose option 2, you will be prompted to enter:
 
 1. **API Key** (required): Your Zilliz Cloud API key
 2. **Database URL** (required): Your Zilliz Cloud database URL
@@ -44,14 +68,69 @@ You will be prompted to enter:
 
 ## Example Output
 
+### Seed Database Example
+
 ```
-Zilliz Cloud Load Test Configuration
-====================================
+Zilliz Cloud Load Test Tool
+===========================
+
+What would you like to do?
+1. Seed the database
+2. Run a read query load test
+
+Enter your choice (1 or 2): 1
+
+Database Seed Configuration
+===========================
 
 Enter API Key: your_api_key_here
 Enter Database URL: https://your-cluster.zillizcloud.com
 Enter Collection Name: my_collection
-Enter Vector Dimension: 128
+Vector Dimension: 768 (fixed for seed operation)
+Total Vectors: 2000000 (fixed for seed operation)
+
+This will upsert 2,000,000 vectors of 768 dimensions into the collection.
+Do you want to continue? (yes/no): yes
+
+Starting database seed operation
+================================
+Collection: my_collection
+Vector Dimension: 768
+Total Vectors: 2000000
+Batch Size: 50,000
+
+Batch 1/40: Inserted 50000 vectors in 2.3s (21739 vectors/sec) [Total: 50000/2000000]
+Batch 2/40: Inserted 50000 vectors in 2.1s (23810 vectors/sec) [Total: 100000/2000000]
+...
+Batch 40/40: Inserted 50000 vectors in 2.2s (22727 vectors/sec) [Total: 2000000/2000000]
+
+================================
+Seed operation completed!
+Total vectors inserted: 2000000
+Total time: 1m 32s
+Average rate: 21739 vectors/sec
+================================
+```
+
+### Load Test Example
+
+```
+Zilliz Cloud Load Test Tool
+===========================
+
+What would you like to do?
+1. Seed the database
+2. Run a read query load test
+
+Enter your choice (1 or 2): 2
+
+Load Test Configuration
+=======================
+
+Enter API Key: your_api_key_here
+Enter Database URL: https://your-cluster.zillizcloud.com
+Enter Collection Name: my_collection
+Enter Vector Dimension: 768
 
 Metric Type options: L2, IP (Inner Product), COSINE
 Enter Metric Type: L2
@@ -65,7 +144,7 @@ Starting Zilliz Cloud Load Test
 ==============================
 Database URL: https://your-cluster.zillizcloud.com
 Collection: my_collection
-Vector Dimension: 128
+Vector Dimension: 768
 Metric Type: L2
 Level: 7
 Duration per QPS: 30s
@@ -93,6 +172,18 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 
 ## Notes
 
+### Database Seeding
+
+- **Seed Operation**: The seed function upserts 2 million vectors of 768 dimensions in batches of 50,000
+- **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
+- **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
+- **Collection Requirements**: Ensure your collection exists and is configured with:
+  - A vector field named "vector" with 768 dimensions
+  - AutoID enabled for the primary key
+  - Appropriate index created (the tool will use AUTOINDEX with level parameter during load tests)
+
+### Load Testing
+
 - The tool uses random query vectors for testing. In production, you may want to use actual query vectors from your dataset.
 - **Vector Dimension**: Required parameter that must match the dimension of vectors in your collection.
 - **Metric Type**: Required parameter that must match the metric type used when creating the collection index. Common options are L2 (Euclidean distance), IP (Inner Product), and COSINE (Cosine similarity).
@@ -101,6 +192,9 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
   - Medium levels (4-7): Balanced performance
   - Higher levels (8-10): Better recall, potentially higher latency
 - **Recall Measurement**: Recall is measured during the test run based on search results. For accurate recall measurement, you would need ground truth data to compare against.
-- The SDK method signatures may vary by version. If you encounter compilation errors, you may need to adjust the `Search` method call in `loadtest.go` to match your SDK version.
 - Ensure your collection is loaded and contains data before running the load test.
+
+### General
+
+- The SDK method signatures may vary by version. If you encounter compilation errors, you may need to adjust the method calls in `loadtest.go` to match your SDK version.
 - The tool supports both `client.NewClient` and `client.NewGrpcClient` initialization methods for compatibility with different SDK versions.

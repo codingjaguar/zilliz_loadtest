@@ -35,10 +35,10 @@ type QueryResult struct {
 	Error   error
 }
 
-func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim int, metricTypeStr string) (*LoadTester, error) {
+// createZillizClient creates a Zilliz Cloud client with API key authentication
+func createZillizClient(apiKey, databaseURL string) (client.Client, error) {
 	ctx := context.Background()
 
-	// Create Zilliz Cloud client with API key authentication
 	// Try the newer client.NewClient approach first
 	milvusClient, err := client.NewClient(
 		ctx,
@@ -66,6 +66,15 @@ func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim 
 		} else if apiKeyClient, ok := milvusClient.(interface{ SetApiKey(string) }); ok {
 			apiKeyClient.SetApiKey(apiKey)
 		}
+	}
+
+	return milvusClient, nil
+}
+
+func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim int, metricTypeStr string) (*LoadTester, error) {
+	milvusClient, err := createZillizClient(apiKey, databaseURL)
+	if err != nil {
+		return nil, err
 	}
 
 	// Parse metric type
@@ -289,6 +298,18 @@ func generateRandomVector(dim int) []float32 {
 	return vector
 }
 
+func generateSeedingVector(dim int, seed int64) []float32 {
+	// Generate a vector with better distribution for seeding
+	// Uses seed to ensure different vectors for each index
+	vector := make([]float32, dim)
+	for i := range vector {
+		// Create a more varied pattern using the seed
+		value := float32((int64(i)*7919 + seed*9829) % 10000)
+		vector[i] = value / 10000.0
+	}
+	return vector
+}
+
 func calculatePercentile(sortedData []float64, percentile int) float64 {
 	if len(sortedData) == 0 {
 		return 0
@@ -316,4 +337,75 @@ func calculatePercentile(sortedData []float64, percentile int) float64 {
 
 	weight := index - float64(lower+1)
 	return sortedData[lower]*(1-weight) + sortedData[upper]*weight
+}
+
+// SeedDatabase seeds the database with the specified number of vectors
+func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVectors int) error {
+	ctx := context.Background()
+
+	// Create client
+	milvusClient, err := createZillizClient(apiKey, databaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+	defer milvusClient.Close()
+
+	fmt.Printf("\nStarting database seed operation\n")
+	fmt.Printf("================================\n")
+	fmt.Printf("Collection: %s\n", collection)
+	fmt.Printf("Vector Dimension: %d\n", vectorDim)
+	fmt.Printf("Total Vectors: %d\n", totalVectors)
+	fmt.Printf("Batch Size: 50,000\n\n")
+
+	// Batch size for efficient upserts
+	batchSize := 50000
+	totalBatches := (totalVectors + batchSize - 1) / batchSize // Ceiling division
+
+	startTime := time.Now()
+	vectorsInserted := 0
+
+	for batchNum := 0; batchNum < totalBatches; batchNum++ {
+		batchStart := batchNum * batchSize
+		batchEnd := batchStart + batchSize
+		if batchEnd > totalVectors {
+			batchEnd = totalVectors
+		}
+		currentBatchSize := batchEnd - batchStart
+
+		// Generate vectors for this batch
+		vectors := make([][]float32, currentBatchSize)
+		for i := 0; i < currentBatchSize; i++ {
+			// Use batchStart + i as seed to ensure unique vectors
+			vectors[i] = generateSeedingVector(vectorDim, int64(batchStart+i))
+		}
+
+		// Create vector column
+		vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
+
+		// Upsert the batch
+		batchStartTime := time.Now()
+		_, err := milvusClient.Upsert(ctx, collection, "", vectorColumn)
+		if err != nil {
+			return fmt.Errorf("failed to upsert batch %d: %w", batchNum+1, err)
+		}
+
+		vectorsInserted += currentBatchSize
+		elapsed := time.Since(batchStartTime)
+		rate := float64(currentBatchSize) / elapsed.Seconds()
+
+		fmt.Printf("Batch %d/%d: Inserted %d vectors in %v (%.0f vectors/sec) [Total: %d/%d]\n",
+			batchNum+1, totalBatches, currentBatchSize, elapsed, rate, vectorsInserted, totalVectors)
+	}
+
+	totalElapsed := time.Since(startTime)
+	avgRate := float64(vectorsInserted) / totalElapsed.Seconds()
+
+	fmt.Printf("\n================================\n")
+	fmt.Printf("Seed operation completed!\n")
+	fmt.Printf("Total vectors inserted: %d\n", vectorsInserted)
+	fmt.Printf("Total time: %v\n", totalElapsed)
+	fmt.Printf("Average rate: %.0f vectors/sec\n", avgRate)
+	fmt.Printf("================================\n")
+
+	return nil
 }

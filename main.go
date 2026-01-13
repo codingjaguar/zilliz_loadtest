@@ -11,19 +11,79 @@ import (
 )
 
 func main() {
-	fmt.Println("Zilliz Cloud Load Test Configuration")
-	fmt.Println("====================================")
+	fmt.Println("Zilliz Cloud Load Test Tool")
+	fmt.Println("===========================")
+	fmt.Println()
+	fmt.Println("What would you like to do?")
+	fmt.Println("1. Seed the database")
+	fmt.Println("2. Run a read query load test")
+	fmt.Println()
+
+	choice := promptInput("Enter your choice (1 or 2): ", true)
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		runSeedDatabase()
+	case "2":
+		runLoadTestFlow()
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Invalid choice. Please enter 1 or 2.\n")
+		os.Exit(1)
+	}
+}
+
+func runSeedDatabase() {
+	fmt.Println("\nDatabase Seed Configuration")
+	fmt.Println("===========================")
 	fmt.Println()
 
 	// Ask for API key
 	apiKey := promptInput("Enter API Key: ", true)
-	
+
 	// Ask for database URL
 	databaseURL := promptInput("Enter Database URL: ", true)
-	
+
 	// Ask for collection name
 	collection := promptInput("Enter Collection Name: ", true)
-	
+
+	// Vector dimension is fixed at 768 for seeding
+	vectorDim := 768
+	fmt.Printf("Vector Dimension: %d (fixed for seed operation)\n", vectorDim)
+
+	// Total vectors is fixed at 2 million
+	totalVectors := 2000000
+	fmt.Printf("Total Vectors: %d (fixed for seed operation)\n", totalVectors)
+
+	// Confirm before proceeding
+	fmt.Println("\nThis will upsert 2,000,000 vectors of 768 dimensions into the collection.")
+	confirm := promptInput("Do you want to continue? (yes/no): ", true)
+	if strings.ToLower(strings.TrimSpace(confirm)) != "yes" {
+		fmt.Println("Seed operation cancelled.")
+		return
+	}
+
+	// Run the seed operation
+	if err := SeedDatabase(apiKey, databaseURL, collection, vectorDim, totalVectors); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runLoadTestFlow() {
+	fmt.Println("\nLoad Test Configuration")
+	fmt.Println("=======================")
+	fmt.Println()
+
+	// Ask for API key
+	apiKey := promptInput("Enter API Key: ", true)
+
+	// Ask for database URL
+	databaseURL := promptInput("Enter Database URL: ", true)
+
+	// Ask for collection name
+	collection := promptInput("Enter Collection Name: ", true)
+
 	// Ask for vector dimension (required)
 	vectorDimInput := promptInput("Enter Vector Dimension: ", true)
 	vectorDim, err := strconv.Atoi(vectorDimInput)
@@ -31,7 +91,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: Vector dimension must be a positive integer\n")
 		os.Exit(1)
 	}
-	
+
 	// Ask for metric type (required)
 	fmt.Println("\nMetric Type options: L2, IP (Inner Product), COSINE")
 	metricTypeInput := promptInput("Enter Metric Type: ", true)
@@ -40,7 +100,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: Invalid metric type. Must be one of: L2, IP, COSINE\n")
 		os.Exit(1)
 	}
-	
+
 	// Ask for QPS levels (comma-separated or one at a time)
 	fmt.Println("\nEnter QPS levels to test (comma-separated, e.g., 100,500,1000):")
 	qpsInput := promptInput("QPS Levels: ", true)
@@ -49,7 +109,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: At least one QPS level is required\n")
 		os.Exit(1)
 	}
-	
+
 	// Ask for level parameter (1-10)
 	levelInput := promptInput("Enter Level (1-10, where 10 optimizes for recall) [default: 5]: ", false)
 	level := 5 // default
@@ -61,7 +121,7 @@ func main() {
 			level = parsedLevel
 		}
 	}
-	
+
 	// Ask for duration (optional)
 	durationInput := promptInput("Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: ", false)
 	duration := 30 * time.Second
