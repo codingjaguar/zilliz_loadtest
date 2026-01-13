@@ -17,6 +17,7 @@ type LoadTester struct {
 	collection string
 	level      int
 	vectorDim  int
+	metricType entity.MetricType
 }
 
 type TestResult struct {
@@ -34,9 +35,9 @@ type QueryResult struct {
 	Error   error
 }
 
-func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim int) (*LoadTester, error) {
+func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim int, metricTypeStr string) (*LoadTester, error) {
 	ctx := context.Background()
-	
+
 	// Create Zilliz Cloud client with API key authentication
 	// Try the newer client.NewClient approach first
 	milvusClient, err := client.NewClient(
@@ -47,7 +48,7 @@ func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim 
 			EnableTLSAuth: true,
 		},
 	)
-	
+
 	// If that fails, try the alternative approach with NewGrpcClient
 	if err != nil {
 		milvusClient, err = client.NewGrpcClient(ctx, databaseURL)
@@ -67,11 +68,25 @@ func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim 
 		}
 	}
 
+	// Parse metric type
+	var metricType entity.MetricType
+	switch metricTypeStr {
+	case "L2":
+		metricType = entity.L2
+	case "IP":
+		metricType = entity.IP
+	case "COSINE":
+		metricType = entity.COSINE
+	default:
+		return nil, fmt.Errorf("unsupported metric type: %s", metricTypeStr)
+	}
+
 	return &LoadTester{
 		client:     milvusClient,
 		collection: collection,
 		level:      level,
 		vectorDim:  vectorDim,
+		metricType: metricType,
 	}, nil
 }
 
@@ -84,14 +99,14 @@ func (lt *LoadTester) Close() {
 func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration) (TestResult, error) {
 	// Calculate interval between requests to achieve target QPS
 	interval := time.Second / time.Duration(targetQPS)
-	
+
 	// Create context with timeout
 	testCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 
 	var wg sync.WaitGroup
 	resultsChan := make(chan QueryResult, targetQPS*10) // Buffer for results
-	
+
 	startTime := time.Now()
 	queryCount := 0
 	var mu sync.Mutex
@@ -126,7 +141,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	// Wait for test duration
 	<-testCtx.Done()
-	
+
 	// Wait for all queries to complete (with timeout)
 	done := make(chan struct{})
 	go func() {
@@ -175,14 +190,14 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
-	fmt.Printf("Completed: %d queries in %v (actual QPS: %.2f, errors: %d)\n", 
+	fmt.Printf("Completed: %d queries in %v (actual QPS: %.2f, errors: %d)\n",
 		len(latencies), elapsed, actualQPS, errors)
 
 	return TestResult{
 		QPS:          targetQPS,
 		P95Latency:   p95,
 		P99Latency:   p99,
-		AvgRecall:   avgRecall,
+		AvgRecall:    avgRecall,
 		TotalQueries: len(latencies),
 		Errors:       errors,
 	}, nil
@@ -214,9 +229,9 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		"",         // expr (empty for no filter)
 		[]string{}, // output fields (empty for IDs and scores only)
 		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",   // vector field name
-		entity.L2,  // metric type
-		10,         // topK
+		"vector",      // vector field name
+		lt.metricType, // metric type
+		10,            // topK
 		searchParams,
 	)
 
@@ -234,7 +249,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// For load testing without ground truth, we estimate recall based on result quality
 	// In a real scenario with ground truth, you would compare results against known relevant items
 	recall := 0.0
-	
+
 	if len(searchResults) > 0 && searchResults[0].ResultCount > 0 {
 		// Estimate recall based on result count and scores
 		// Higher scores and more results suggest better recall

@@ -31,12 +31,16 @@ You will be prompted to enter:
 1. **API Key** (required): Your Zilliz Cloud API key
 2. **Database URL** (required): Your Zilliz Cloud database URL
 3. **Collection Name** (required): The collection to test
-4. **QPS Levels** (required): Comma-separated QPS values to test (e.g., `100,500,1000`)
-5. **Level** (optional, default: 5): Integer from 1-10 where:
+4. **Vector Dimension** (required): Vector dimension for query vectors
+5. **Metric Type** (required): Distance metric type - one of:
+   - `L2`: Euclidean distance (L2 norm)
+   - `IP`: Inner Product
+   - `COSINE`: Cosine similarity
+6. **QPS Levels** (required): Comma-separated QPS values to test (e.g., `100,500,1000`)
+7. **Level** (optional, default: 5): Integer from 1-10 where:
    - Level 1: Optimizes for latency (faster searches)
    - Level 10: Optimizes for recall (more accurate results)
-6. **Duration** (optional, default: 30s): Duration for each QPS test (e.g., `30s`, `1m`)
-7. **Vector Dimension** (optional, default: 128): Vector dimension for query vectors
+8. **Duration** (optional, default: 30s): Duration for each QPS test (e.g., `30s`, `1m`)
 
 ## Example Output
 
@@ -47,17 +51,22 @@ Zilliz Cloud Load Test Configuration
 Enter API Key: your_api_key_here
 Enter Database URL: https://your-cluster.zillizcloud.com
 Enter Collection Name: my_collection
+Enter Vector Dimension: 128
+
+Metric Type options: L2, IP (Inner Product), COSINE
+Enter Metric Type: L2
 
 Enter QPS levels to test (comma-separated, e.g., 100,500,1000):
 QPS Levels: 100,500,1000
-Enter Level (1-10, where 10 optimizes for recall): 7
+Enter Level (1-10, where 10 optimizes for recall) [default: 5]: 7
 Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: 30s
-Enter Vector Dimension [default: 128]: 128
 
 Starting Zilliz Cloud Load Test
 ==============================
 Database URL: https://your-cluster.zillizcloud.com
 Collection: my_collection
+Vector Dimension: 128
+Metric Type: L2
 Level: 7
 Duration per QPS: 30s
 QPS Levels: [100 500 1000]
@@ -85,7 +94,8 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 ## Notes
 
 - The tool uses random query vectors for testing. In production, you may want to use actual query vectors from your dataset.
-- Vector dimensions default to 128 but can be configured during the interactive prompt.
+- **Vector Dimension**: Required parameter that must match the dimension of vectors in your collection.
+- **Metric Type**: Required parameter that must match the metric type used when creating the collection index. Common options are L2 (Euclidean distance), IP (Inner Product), and COSINE (Cosine similarity).
 - **Level Parameter**: The level parameter (1-10) controls the trade-off between recall and latency:
   - Lower levels (1-3): Faster searches, potentially lower recall
   - Medium levels (4-7): Balanced performance

@@ -24,6 +24,23 @@ func main() {
 	// Ask for collection name
 	collection := promptInput("Enter Collection Name: ", true)
 	
+	// Ask for vector dimension (required)
+	vectorDimInput := promptInput("Enter Vector Dimension: ", true)
+	vectorDim, err := strconv.Atoi(vectorDimInput)
+	if err != nil || vectorDim <= 0 {
+		fmt.Fprintf(os.Stderr, "Error: Vector dimension must be a positive integer\n")
+		os.Exit(1)
+	}
+	
+	// Ask for metric type (required)
+	fmt.Println("\nMetric Type options: L2, IP (Inner Product), COSINE")
+	metricTypeInput := promptInput("Enter Metric Type: ", true)
+	metricType := parseMetricType(metricTypeInput)
+	if metricType == "" {
+		fmt.Fprintf(os.Stderr, "Error: Invalid metric type. Must be one of: L2, IP, COSINE\n")
+		os.Exit(1)
+	}
+	
 	// Ask for QPS levels (comma-separated or one at a time)
 	fmt.Println("\nEnter QPS levels to test (comma-separated, e.g., 100,500,1000):")
 	qpsInput := promptInput("QPS Levels: ", true)
@@ -34,7 +51,7 @@ func main() {
 	}
 	
 	// Ask for level parameter (1-10)
-	levelInput := promptInput("Enter Level (1-10, where 10 optimizes for recall): ", false)
+	levelInput := promptInput("Enter Level (1-10, where 10 optimizes for recall) [default: 5]: ", false)
 	level := 5 // default
 	if levelInput != "" {
 		parsedLevel, err := strconv.Atoi(levelInput)
@@ -56,23 +73,25 @@ func main() {
 			duration = parsedDuration
 		}
 	}
-	
-	// Ask for vector dimension (optional)
-	vectorDimInput := promptInput("Enter Vector Dimension [default: 128]: ", false)
-	vectorDim := 128
-	if vectorDimInput != "" {
-		parsedDim, err := strconv.Atoi(vectorDimInput)
-		if err != nil || parsedDim <= 0 {
-			fmt.Fprintf(os.Stderr, "Warning: Invalid vector dimension. Using default: 128\n")
-		} else {
-			vectorDim = parsedDim
-		}
-	}
 
 	// Run the load test
-	if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, level, duration, vectorDim); err != nil {
+	if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, level, duration, vectorDim, metricType); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func parseMetricType(input string) string {
+	input = strings.ToUpper(strings.TrimSpace(input))
+	switch input {
+	case "L2":
+		return "L2"
+	case "IP":
+		return "IP"
+	case "COSINE":
+		return "COSINE"
+	default:
+		return ""
 	}
 }
 
@@ -115,11 +134,13 @@ func parseQPSLevels(input string) []int {
 	return qpsLevels
 }
 
-func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level int, duration time.Duration, vectorDim int) error {
+func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level int, duration time.Duration, vectorDim int, metricType string) error {
 	fmt.Printf("\n\nStarting Zilliz Cloud Load Test\n")
 	fmt.Printf("==============================\n")
 	fmt.Printf("Database URL: %s\n", databaseURL)
 	fmt.Printf("Collection: %s\n", collection)
+	fmt.Printf("Vector Dimension: %d\n", vectorDim)
+	fmt.Printf("Metric Type: %s\n", metricType)
 	fmt.Printf("Level: %d\n", level)
 	fmt.Printf("Duration per QPS: %v\n", duration)
 	fmt.Printf("QPS Levels: %v\n\n", qpsLevels)
@@ -127,7 +148,7 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level 
 	ctx := context.Background()
 
 	// Initialize load tester
-	tester, err := NewLoadTester(apiKey, databaseURL, collection, level, vectorDim)
+	tester, err := NewLoadTester(apiKey, databaseURL, collection, level, vectorDim, metricType)
 	if err != nil {
 		return fmt.Errorf("failed to initialize load tester: %w", err)
 	}
