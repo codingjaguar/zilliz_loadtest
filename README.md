@@ -97,12 +97,12 @@ Starting database seed operation
 Collection: my_collection
 Vector Dimension: 768
 Total Vectors: 2000000
-Batch Size: 50,000
+Batch Size: 20,000
 
-Batch 1/40: Inserted 50000 vectors in 2.3s (21739 vectors/sec) [Total: 50000/2000000]
-Batch 2/40: Inserted 50000 vectors in 2.1s (23810 vectors/sec) [Total: 100000/2000000]
+[Progress: 0.0%] Batch 1/100: Inserted 20000 vectors (Generate: 1.2s, Upload: 2.3s, Total: 3.5s, 5714 vec/s) [ETA: 5m 42s]
+[Progress: 1.0%] Batch 2/100: Inserted 20000 vectors (Generate: 1.1s, Upload: 2.1s, Total: 3.2s, 6250 vec/s) [ETA: 5m 18s]
 ...
-Batch 40/40: Inserted 50000 vectors in 2.2s (22727 vectors/sec) [Total: 2000000/2000000]
+[Progress: 99.0%] Batch 100/100: Inserted 20000 vectors (Generate: 1.2s, Upload: 2.2s, Total: 3.4s, 5882 vec/s) [ETA: 0s]
 
 ================================
 Seed operation completed!
@@ -174,7 +174,7 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function upserts 2 million vectors of 768 dimensions in batches of 50,000
+- **Seed Operation**: The seed function upserts 2 million vectors of 768 dimensions in batches of 20,000 (reduced to avoid gRPC message size limits)
 - **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
 - **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
 - **Collection Requirements**: Ensure your collection exists and is configured with:

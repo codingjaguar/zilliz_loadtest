@@ -384,10 +384,11 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 	fmt.Printf("Collection: %s\n", collection)
 	fmt.Printf("Vector Dimension: %d\n", vectorDim)
 	fmt.Printf("Total Vectors: %d\n", totalVectors)
-	fmt.Printf("Batch Size: 50,000\n\n")
+	fmt.Printf("Batch Size: 20,000\n\n")
 
-	// Batch size for efficient upserts
-	batchSize := 50000
+	// Batch size for efficient upserts (reduced to avoid gRPC message size limits)
+	// With 768 dimensions, each vector is ~3KB, so 20,000 vectors = ~60MB (under 64MB limit)
+	batchSize := 20000
 	totalBatches := (totalVectors + batchSize - 1) / batchSize // Ceiling division
 
 	startTime := time.Now()
@@ -401,29 +402,59 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 		}
 		currentBatchSize := batchEnd - batchStart
 
+		// Show progress before generating vectors
+		progressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
+		fmt.Printf("[Progress: %.1f%%] Generating batch %d/%d (%d vectors)...\r",
+			progressPercent, batchNum+1, totalBatches, currentBatchSize)
+
 		// Generate vectors for this batch
+		generateStart := time.Now()
 		vectors := make([][]float32, currentBatchSize)
 		for i := 0; i < currentBatchSize; i++ {
 			// Use batchStart + i as seed to ensure unique vectors
 			vectors[i] = generateSeedingVector(vectorDim, int64(batchStart+i))
+			
+			// Show progress every 5000 vectors during generation
+			if (i+1)%5000 == 0 {
+				progressPercent := float64(vectorsInserted+i+1) / float64(totalVectors) * 100
+				fmt.Printf("[Progress: %.1f%%] Generating batch %d/%d (%d/%d vectors)...\r",
+					progressPercent, batchNum+1, totalBatches, i+1, currentBatchSize)
+			}
 		}
+		generateTime := time.Since(generateStart)
 
 		// Create vector column
 		vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
 
 		// Upsert the batch
 		batchStartTime := time.Now()
+		uploadProgressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
+		fmt.Printf("\r[Progress: %.1f%%] Uploading batch %d/%d...",
+			uploadProgressPercent, batchNum+1, totalBatches)
+		
 		_, err := milvusClient.Upsert(ctx, collection, "", vectorColumn)
 		if err != nil {
 			return fmt.Errorf("failed to upsert batch %d: %w", batchNum+1, err)
 		}
 
 		vectorsInserted += currentBatchSize
-		elapsed := time.Since(batchStartTime)
-		rate := float64(currentBatchSize) / elapsed.Seconds()
-
-		fmt.Printf("Batch %d/%d: Inserted %d vectors in %v (%.0f vectors/sec) [Total: %d/%d]\n",
-			batchNum+1, totalBatches, currentBatchSize, elapsed, rate, vectorsInserted, totalVectors)
+		uploadTime := time.Since(batchStartTime)
+		totalBatchTime := time.Since(generateStart)
+		rate := float64(currentBatchSize) / totalBatchTime.Seconds()
+		
+		// Calculate estimated time remaining
+		elapsedTotal := time.Since(startTime)
+		avgRate := float64(vectorsInserted) / elapsedTotal.Seconds()
+		remainingVectors := totalVectors - vectorsInserted
+		estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
+		
+		progressPercent = float64(vectorsInserted) / float64(totalVectors) * 100
+		
+		// Print detailed progress after each batch
+		fmt.Printf("\r[Progress: %.1f%%] Batch %d/%d: Inserted %d vectors (Generate: %v, Upload: %v, Total: %v, %.0f vec/s) [ETA: %v]\n",
+			progressPercent, batchNum+1, totalBatches, currentBatchSize,
+			generateTime.Round(time.Millisecond), uploadTime.Round(time.Millisecond),
+			totalBatchTime.Round(time.Millisecond), rate, estimatedTimeRemaining.Round(time.Second))
 	}
 
 	totalElapsed := time.Since(startTime)
