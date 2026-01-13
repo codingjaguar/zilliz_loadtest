@@ -191,7 +191,7 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
   - Lower levels (1-3): Faster searches, potentially lower recall
   - Medium levels (4-7): Balanced performance
   - Higher levels (8-10): Better recall, potentially higher latency
-- **Recall Measurement**: Recall is measured during the test run based on search results. For accurate recall measurement, you would need ground truth data to compare against.
+- **Recall Measurement**: Recall is automatically calculated by Zilliz Cloud when `enable_recall_calculation` is enabled in the search parameters. The tool uses this feature to get accurate recall rates for each query. See the [Zilliz documentation](https://docs.zilliz.com/docs/tune-recall-rate#tune-recall-rate) for more details.
 - Ensure your collection is loaded and contains data before running the load test.
 
 ### General

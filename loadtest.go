@@ -212,6 +212,27 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}, nil
 }
 
+// CustomSearchParam implements SearchParam interface with level and enable_recall_calculation
+type CustomSearchParam struct {
+	level                   int
+	enableRecallCalculation bool
+}
+
+func (c *CustomSearchParam) Params() map[string]interface{} {
+	params := make(map[string]interface{})
+	params["level"] = c.level
+	params["enable_recall_calculation"] = c.enableRecallCalculation
+	return params
+}
+
+func (c *CustomSearchParam) AddRadius(radius float64) {
+	// Not used for AUTOINDEX
+}
+
+func (c *CustomSearchParam) AddRangeFilter(rangeFilter float64) {
+	// Not used for AUTOINDEX
+}
+
 func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResult {
 	start := time.Now()
 
@@ -219,15 +240,13 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// In a real scenario, you'd use actual query vectors from your dataset
 	queryVector := generateRandomVector(lt.vectorDim)
 
-	// Create search parameters with level
+	// Create search parameters with level and enable_recall_calculation
 	// The level parameter (1-10) optimizes for recall vs latency
 	// Level 10 optimizes for recall at the expense of latency, level 1 optimizes for latency
-	searchParams, err := entity.NewIndexAUTOINDEXSearchParam(lt.level)
-	if err != nil {
-		return QueryResult{
-			Latency: time.Since(start),
-			Error:   fmt.Errorf("failed to create search params: %w", err),
-		}
+	// enable_recall_calculation tells Zilliz to calculate and return the recall rate
+	searchParams := &CustomSearchParam{
+		level:                   lt.level,
+		enableRecallCalculation: true,
 	}
 
 	// Execute search
@@ -253,30 +272,40 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		}
 	}
 
-	// Calculate recall from search results
-	// Recall is measured as the ratio of relevant results found
-	// For load testing without ground truth, we estimate recall based on result quality
-	// In a real scenario with ground truth, you would compare results against known relevant items
+	// Extract recall from search results
+	// When enable_recall_calculation is true, Zilliz returns the recall in the response
+	// According to docs: https://docs.zilliz.com/docs/tune-recall-rate#tune-recall-rate
 	recall := 0.0
 
 	if len(searchResults) > 0 && searchResults[0].ResultCount > 0 {
-		// Estimate recall based on result count and scores
-		// Higher scores and more results suggest better recall
-		// This is a simplified metric - actual recall requires ground truth data
-		resultCount := searchResults[0].ResultCount
-		if resultCount > 0 {
-			// If we got results, assume some level of recall
-			// The actual recall would need to be calculated against ground truth
-			// For now, we use a heuristic based on result count and level
-			// Level 10 should give better recall, so we weight it higher
-			baseRecall := float64(resultCount) / 10.0 // Normalize by topK (10)
-			if baseRecall > 1.0 {
-				baseRecall = 1.0
+		// The recall is returned in the Fields as a column when enable_recall_calculation is true
+		// According to the docs, it's returned as "recalls" (plural) in the response
+		// Try both "recall" and "recalls" to handle different SDK versions
+		fields := searchResults[0].Fields
+		if fields != nil {
+			// Try "recalls" first (as shown in Python docs)
+			recallColumn := fields.GetColumn("recalls")
+			if recallColumn == nil {
+				// Fallback to "recall" (singular)
+				recallColumn = fields.GetColumn("recall")
 			}
-			// Adjust based on level (higher level = better recall potential)
-			recall = baseRecall * (0.8 + float64(lt.level)*0.02) // Scale between 0.82 and 1.0 based on level
-			if recall > 1.0 {
-				recall = 1.0
+
+			if recallColumn != nil {
+				// The recall column should contain float values
+				// Extract the first recall value (typically one per query)
+				if floatColumn, ok := recallColumn.(*entity.ColumnFloat); ok {
+					if floatColumn.Len() > 0 {
+						if val, err := floatColumn.ValueByIdx(0); err == nil {
+							recall = float64(val)
+						}
+					}
+				} else if doubleColumn, ok := recallColumn.(*entity.ColumnDouble); ok {
+					if doubleColumn.Len() > 0 {
+						if val, err := doubleColumn.GetAsDouble(0); err == nil {
+							recall = val
+						}
+					}
+				}
 			}
 		}
 	}
