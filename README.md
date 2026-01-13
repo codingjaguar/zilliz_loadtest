@@ -97,12 +97,14 @@ Starting database seed operation
 Collection: my_collection
 Vector Dimension: 768
 Total Vectors: 2000000
-Batch Size: 20,000
+Batch Size: 10000
+Concurrency: 3 workers
 
-[Progress: 0.0%] Batch 1/100: Inserted 20000 vectors (Generate: 1.2s, Upload: 2.3s, Total: 3.5s, 5714 vec/s) [ETA: 5m 42s]
-[Progress: 1.0%] Batch 2/100: Inserted 20000 vectors (Generate: 1.1s, Upload: 2.1s, Total: 3.2s, 6250 vec/s) [ETA: 5m 18s]
+[Progress: 0.5%] Batch 1/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.2s, Total: 1.8s, 5556 vec/s) [ETA: 5m 58s]
+[Progress: 1.0%] Batch 2/200: Inserted 10000 vectors (Generate: 0.5s, Upload: 1.1s, Total: 1.6s, 6250 vec/s) [ETA: 5m 18s]
+[Progress: 1.5%] Batch 3/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.3s, Total: 1.9s, 5263 vec/s) [ETA: 6m 12s]
 ...
-[Progress: 99.0%] Batch 100/100: Inserted 20000 vectors (Generate: 1.2s, Upload: 2.2s, Total: 3.4s, 5882 vec/s) [ETA: 0s]
+[Progress: 99.5%] Batch 200/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.2s, Total: 1.8s, 5556 vec/s) [ETA: 0s]
 
 ================================
 Seed operation completed!
@@ -174,7 +176,11 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions in batches of 20,000 (reduced to avoid gRPC message size limits). Uses `Insert` API since autoID is enabled and no primary key is required.
+- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions using concurrent batching:
+  - Batch size: 10,000 vectors per batch (~30MB, well under 64MB gRPC limit)
+  - Concurrency: 3 workers processing batches in parallel
+  - Uses `Insert` API since autoID is enabled and no primary key is required
+  - Provides real-time progress updates with ETA and performance metrics
 - **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
 - **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
 - **Collection Requirements**: Ensure your collection exists and is configured with:
