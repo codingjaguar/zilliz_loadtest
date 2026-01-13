@@ -426,15 +426,15 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 		// Create vector column
 		vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
 
-		// Upsert the batch
+		// Insert the batch (using Insert instead of Upsert since autoID is enabled)
 		batchStartTime := time.Now()
 		uploadProgressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
 		fmt.Printf("\r[Progress: %.1f%%] Uploading batch %d/%d...",
 			uploadProgressPercent, batchNum+1, totalBatches)
 		
-		_, err := milvusClient.Upsert(ctx, collection, "", vectorColumn)
+		_, err := milvusClient.Insert(ctx, collection, "", vectorColumn)
 		if err != nil {
-			return fmt.Errorf("failed to upsert batch %d: %w", batchNum+1, err)
+			return fmt.Errorf("failed to insert batch %d: %w", batchNum+1, err)
 		}
 
 		vectorsInserted += currentBatchSize

@@ -4,7 +4,7 @@ A CLI tool for seeding and load testing Zilliz Cloud with configurable QPS and c
 
 ## Features
 
-- **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the upsert API
+- **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the insert API
 - Configurable QPS levels (default: 100, 500, 1000 QPS)
 - Measures P95 and P99 latencies
 - Tracks recall accuracy from Zilliz Cloud responses
@@ -29,7 +29,7 @@ The tool uses an interactive CLI that starts with a menu:
 
 ### Menu Options
 
-1. **Seed the database**: Upsert 2 million 768-dimension vectors into your collection
+1. **Seed the database**: Insert 2 million 768-dimension vectors into your collection
 2. **Run a read query load test**: Perform load testing with configurable QPS levels
 
 ### Seed Database
@@ -42,7 +42,7 @@ When you choose option 1, you will be prompted to enter:
 4. **Confirmation**: Confirm before starting the seed operation
 
 The seed operation will:
-- Upsert 2,000,000 vectors of 768 dimensions
+- Insert 2,000,000 vectors of 768 dimensions
 - Use batches of 50,000 vectors for efficient insertion
 - Display progress and insertion rate
 - Assume autoID is enabled (no primary key required)
@@ -89,7 +89,7 @@ Enter Collection Name: my_collection
 Vector Dimension: 768 (fixed for seed operation)
 Total Vectors: 2000000 (fixed for seed operation)
 
-This will upsert 2,000,000 vectors of 768 dimensions into the collection.
+This will insert 2,000,000 vectors of 768 dimensions into the collection.
 Do you want to continue? (yes/no): yes
 
 Starting database seed operation
@@ -174,7 +174,7 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function upserts 2 million vectors of 768 dimensions in batches of 20,000 (reduced to avoid gRPC message size limits)
+- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions in batches of 20,000 (reduced to avoid gRPC message size limits). Uses `Insert` API since autoID is enabled and no primary key is required.
 - **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
 - **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
 - **Collection Requirements**: Ensure your collection exists and is configured with:
