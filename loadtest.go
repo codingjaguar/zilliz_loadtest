@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -212,14 +213,18 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}, nil
 }
 
-// CustomSearchParam implements SearchParam interface with level parameter
+// CustomSearchParam implements SearchParam interface with level and enable_recall_calculation
 type CustomSearchParam struct {
-	level int
+	level                   int
+	enableRecallCalculation bool
 }
 
 func (c *CustomSearchParam) Params() map[string]interface{} {
 	params := make(map[string]interface{})
 	params["level"] = c.level
+	if c.enableRecallCalculation {
+		params["enable_recall_calculation"] = true
+	}
 	return params
 }
 
@@ -235,17 +240,19 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
 
-	// Create search parameters with level
-	// The level parameter (1-10) optimizes for recall vs latency
-	// Level 10 optimizes for recall at the expense of latency, level 1 optimizes for latency
+	// Create search parameters with level and enable_recall_calculation
+	// According to Zilliz docs: https://docs.zilliz.com/docs/single-vector-search#get-recall-rate
+	// enable_recall_calculation should be passed as a search parameter
 	searchParams := &CustomSearchParam{
-		level: lt.level,
+		level:                   lt.level,
+		enableRecallCalculation: true,
 	}
 
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Execute approximate search at configured level
+	// Execute search with recall calculation enabled
+	// According to docs, recall should be returned in the response when enable_recall_calculation is true
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
@@ -268,16 +275,9 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		}
 	}
 
-	// Estimate recall by comparing with high-recall search (level 10)
-	// We do this for a sample of queries to avoid performance impact
-	recall := 0.0
-	const recallSampleRate = 10 // Calculate recall for every Nth query (reduced for better sampling)
-
-	// Calculate recall for first query and then every Nth query
-	// This ensures we always have at least one recall measurement
-	if len(searchResults) > 0 && (queryNum == 1 || (queryNum-1)%recallSampleRate == 0) {
-		recall = lt.estimateRecall(ctx, queryVector, searchResults[0])
-	}
+	// Extract recall from search results
+	// According to the docs, recall should be available in the response
+	recall := lt.extractRecallFromResults(searchResults, queryNum)
 
 	return QueryResult{
 		Latency: latency,
@@ -285,68 +285,56 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	}
 }
 
-// estimateRecall estimates recall by comparing approximate results with high-recall results (level 10)
-func (lt *LoadTester) estimateRecall(ctx context.Context, queryVector []float32, approximateResult client.SearchResult) float64 {
-	// Check if approximate result has IDs
-	if approximateResult.IDs == nil {
+// extractRecallFromResults extracts recall from search results when enable_recall_calculation is enabled
+func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResult, queryNum int) float64 {
+	if len(searchResults) == 0 {
 		return 0.0
 	}
 
-	// Do a high-recall search (level 10) to get ground truth
-	highRecallParams := &CustomSearchParam{
-		level: 10, // Highest recall level
-	}
+	result := searchResults[0]
 
-	highRecallResults, err := lt.client.Search(
-		ctx,
-		lt.collection,
-		[]string{},
-		"",
-		[]string{},
-		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",
-		lt.metricType,
-		10, // topK
-		highRecallParams,
-	)
+	// According to Zilliz docs, recall should be in the Fields
+	// Try to find it in the Fields
+	if result.Fields != nil {
+		// Check for "recalls" or "recall" field
+		for _, field := range result.Fields {
+			fieldName := field.Name()
+			if fieldName == "recalls" || fieldName == "recall" {
+				// Try to extract the recall value
+				if field.Len() > 0 {
+					if val, err := field.Get(0); err == nil {
+						// Try to convert to float64
+						switch v := val.(type) {
+						case float64:
+							return v
+						case float32:
+							return float64(v)
+						case int:
+							return float64(v) / 100.0 // Convert from percentage
+						case int64:
+							return float64(v) / 100.0 // Convert from percentage
+						case string:
+							// Try to parse as float
+							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+								return parsed
+							}
+						}
+					}
+				}
+			}
+		}
 
-	if err != nil || len(highRecallResults) == 0 {
-		return 0.0
-	}
-
-	highRecallResult := highRecallResults[0]
-	if highRecallResult.IDs == nil {
-		return 0.0
-	}
-
-	// Extract IDs from both results
-	approxIDs := extractIDs(approximateResult.IDs)
-	groundTruthIDs := extractIDs(highRecallResult.IDs)
-
-	if len(approxIDs) == 0 || len(groundTruthIDs) == 0 {
-		return 0.0
-	}
-
-	// Calculate intersection
-	intersection := 0
-	groundTruthSet := make(map[interface{}]bool)
-	for _, id := range groundTruthIDs {
-		groundTruthSet[id] = true
-	}
-
-	for _, id := range approxIDs {
-		if groundTruthSet[id] {
-			intersection++
+		// Debug: Print all field names for first query
+		if queryNum == 1 {
+			fmt.Printf("\n=== Available Fields in Search Result ===\n")
+			for i, field := range result.Fields {
+				fmt.Printf("  Fields[%d]: name=%s, type=%T, len=%d\n", i, field.Name(), field, field.Len())
+			}
+			fmt.Printf("========================================\n\n")
 		}
 	}
 
-	// Recall = intersection / topK
-	topK := len(groundTruthIDs)
-	if topK == 0 {
-		return 0.0
-	}
-
-	return float64(intersection) / float64(topK)
+	return 0.0
 }
 
 // extractIDs extracts IDs from a column into a slice for comparison
