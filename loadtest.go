@@ -295,14 +295,34 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 
 	result := searchResults[0]
 
+	// Dump entire search result structure for first query
+	if queryNum == 1 {
+		fmt.Printf("\n=== ENTIRE SEARCH RESULT STRUCTURE ===\n")
+		fmt.Printf("ResultCount: %d\n", result.ResultCount)
+		fmt.Printf("Scores: %v (len=%d)\n", result.Scores, len(result.Scores))
+		fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
+		if result.IDs != nil {
+			fmt.Printf("IDs type: %T, len: %d\n", result.IDs, result.IDs.Len())
+		}
+		fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
+		fmt.Printf("Fields length: %d\n", len(result.Fields))
+		fmt.Printf("Err: %v\n", result.Err)
+
+		// Try to marshal the entire result to JSON to see all fields
+		if jsonData, err := json.MarshalIndent(result, "", "  "); err == nil {
+			fmt.Printf("\n=== SearchResult as JSON ===\n")
+			fmt.Printf("%s\n", string(jsonData))
+		} else {
+			fmt.Printf("Could not marshal SearchResult: %v\n", err)
+		}
+		fmt.Printf("=====================================\n\n")
+	}
+
 	// According to Zilliz docs, recall should be in the Fields when we request "recalls" as output field
 	if len(result.Fields) == 0 {
 		if queryNum == 1 {
 			fmt.Printf("\n=== DEBUG: Fields is nil or empty ===\n")
 			fmt.Printf("This might mean the SDK isn't returning fields even though we requested 'recalls'\n")
-			fmt.Printf("ResultCount: %d\n", result.ResultCount)
-			fmt.Printf("Scores count: %d\n", len(result.Scores))
-			fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
 			fmt.Printf("========================================\n\n")
 		}
 		return 0.0
@@ -325,13 +345,31 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 			if field.Len() > 0 {
 				// ColumnDynamic needs special handling - it's a JSON field
 				if dynamicCol, ok := field.(*entity.ColumnDynamic); ok {
-					// First, let's inspect the raw JSON to understand the structure
-					// ColumnDynamic embeds ColumnJSONBytes, so we can access ValueByIdx
-					if bytes, err := dynamicCol.ValueByIdx(0); err == nil {
-						if queryNum == 1 {
-							fmt.Printf("Raw JSON for recalls[0]: %s\n", string(bytes))
+					// Dump ALL JSON values in the recalls column to see the full structure
+					if queryNum == 1 {
+						fmt.Printf("\n=== Dumping ALL JSON values in recalls column ===\n")
+						fmt.Printf("Column length: %d\n", dynamicCol.Len())
+						for i := 0; i < dynamicCol.Len() && i < 10; i++ {
+							if bytes, err := dynamicCol.ValueByIdx(i); err == nil {
+								fmt.Printf("recalls[%d] raw JSON: %s\n", i, string(bytes))
+								// Try to pretty print if it's valid JSON
+								var jsonData interface{}
+								if err := json.Unmarshal(bytes, &jsonData); err == nil {
+									if prettyJSON, err := json.MarshalIndent(jsonData, "  ", "  "); err == nil {
+										fmt.Printf("recalls[%d] formatted JSON:\n%s\n", i, string(prettyJSON))
+									}
+								}
+							} else {
+								fmt.Printf("recalls[%d] error: %v\n", i, err)
+							}
 						}
+						fmt.Printf("==================================================\n\n")
+					}
 
+					// Try to get the value using the standard methods
+					// ColumnDynamic looks for a field named "recalls" in the JSON
+					// But the JSON might be structured differently
+					if bytes, err := dynamicCol.ValueByIdx(0); err == nil {
 						// The JSON might not have "recalls" as a field name - it might be the value directly
 						// or it might be structured differently. Let's try to parse it directly.
 						// If the JSON is just a number, parse it directly
@@ -345,9 +383,6 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 						// Try to parse as JSON and look for common field names
 						var jsonData interface{}
 						if err := json.Unmarshal(bytes, &jsonData); err == nil {
-							if queryNum == 1 {
-								fmt.Printf("Parsed JSON structure: %v (type: %T)\n", jsonData, jsonData)
-							}
 							// If it's a map, look for recall-related keys
 							if jsonMap, ok := jsonData.(map[string]interface{}); ok {
 								for key, val := range jsonMap {
