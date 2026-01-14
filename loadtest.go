@@ -110,7 +110,10 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	defer cancel()
 
 	var wg sync.WaitGroup
-	resultsChan := make(chan QueryResult, targetQPS*10) // Buffer for results
+	// Make buffer large enough to hold all expected results
+	// For a 5 minute test at 100 QPS, that's 30,000 queries
+	expectedQueries := int(duration.Seconds()) * targetQPS
+	resultsChan := make(chan QueryResult, expectedQueries*2) // 2x buffer for safety
 
 	startTime := time.Now()
 	queryCount := 0
@@ -120,6 +123,10 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	// Simple rate limiter: fire exactly one query per interval
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Create a separate context for query execution that doesn't get cancelled
+	// This allows queries to complete even after the test duration ends
+	queryCtx := ctx // Use parent context, not testCtx
 
 	go func() {
 		for {
@@ -136,11 +143,12 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 				wg.Add(1)
 				go func(queryNum int) {
 					defer wg.Done()
-					result := lt.executeQuery(testCtx, queryNum)
-					select {
-					case resultsChan <- result:
-					case <-testCtx.Done():
-					}
+					// Use queryCtx instead of testCtx so queries can complete
+					// even after the test duration ends
+					result := lt.executeQuery(queryCtx, queryNum)
+					// Always try to send result, don't check testCtx.Done()
+					// The channel will be closed after all goroutines finish
+					resultsChan <- result
 				}(currentQuery)
 			}
 		}
@@ -153,7 +161,17 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	totalFired := queriesFired
 	mu.Unlock()
 
-	// Wait for all queries to complete (with timeout)
+	fmt.Printf("Test duration ended. Waiting for %d in-flight queries to complete...\n", totalFired)
+
+	// Wait for all queries to complete (with longer timeout for long tests)
+	waitTimeout := duration / 2
+	if waitTimeout < 30*time.Second {
+		waitTimeout = 30 * time.Second
+	}
+	if waitTimeout > 5*time.Minute {
+		waitTimeout = 5 * time.Minute
+	}
+
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -162,8 +180,9 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		fmt.Printf("Warning: Some queries may still be running\n")
+		fmt.Printf("All queries completed\n")
+	case <-time.After(waitTimeout):
+		fmt.Printf("Warning: Timed out waiting for queries after %v. Some queries may still be running\n", waitTimeout)
 	}
 
 	close(resultsChan)
