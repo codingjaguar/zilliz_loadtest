@@ -218,10 +218,75 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}, nil
 }
 
+// SearchOption represents search options in a builder pattern (similar to NewSearchOption from docs)
+type SearchOption struct {
+	collectionName   string
+	limit            int
+	vectors          []entity.Vector
+	annsField        string
+	outputFields     []string
+	consistencyLevel entity.ConsistencyLevel
+	searchParams     map[string]string
+	expr             string
+	partitions       []string
+}
+
+// NewSearchOption creates a new SearchOption with required parameters
+func NewSearchOption(collectionName string, limit int, vectors []entity.Vector) *SearchOption {
+	return &SearchOption{
+		collectionName:   collectionName,
+		limit:            limit,
+		vectors:          vectors,
+		annsField:        "vector", // default
+		outputFields:     []string{},
+		consistencyLevel: entity.ClBounded, // default
+		searchParams:     make(map[string]string),
+		expr:             "",
+		partitions:       []string{},
+	}
+}
+
+// WithANNSField sets the ANN search field name
+func (so *SearchOption) WithANNSField(fieldName string) *SearchOption {
+	so.annsField = fieldName
+	return so
+}
+
+// WithOutputFields sets the output fields to return
+func (so *SearchOption) WithOutputFields(fields ...string) *SearchOption {
+	so.outputFields = fields
+	return so
+}
+
+// WithConsistencyLevel sets the consistency level
+func (so *SearchOption) WithConsistencyLevel(cl entity.ConsistencyLevel) *SearchOption {
+	so.consistencyLevel = cl
+	return so
+}
+
+// WithSearchParam adds a search parameter
+func (so *SearchOption) WithSearchParam(key, value string) *SearchOption {
+	so.searchParams[key] = value
+	return so
+}
+
+// WithExpr sets the filter expression
+func (so *SearchOption) WithExpr(expr string) *SearchOption {
+	so.expr = expr
+	return so
+}
+
+// WithPartitions sets the partition names
+func (so *SearchOption) WithPartitions(partitions ...string) *SearchOption {
+	so.partitions = partitions
+	return so
+}
+
 // CustomSearchParam implements SearchParam interface with level and enable_recall_calculation
 type CustomSearchParam struct {
 	level                   int
 	enableRecallCalculation bool
+	searchParams            map[string]string
 }
 
 func (c *CustomSearchParam) Params() map[string]interface{} {
@@ -229,6 +294,10 @@ func (c *CustomSearchParam) Params() map[string]interface{} {
 	params["level"] = c.level
 	if c.enableRecallCalculation {
 		params["enable_recall_calculation"] = true
+	}
+	// Add any additional search params
+	for k, v := range c.searchParams {
+		params[k] = v
 	}
 	return params
 }
@@ -245,31 +314,41 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
 
-	// Create search parameters with level and enable_recall_calculation
-	// According to Zilliz docs: https://docs.zilliz.com/docs/single-vector-search#get-recall-rate
-	// enable_recall_calculation should be passed as a search parameter
-	searchParams := &CustomSearchParam{
-		level:                   lt.level,
-		enableRecallCalculation: true,
-	}
-
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Execute search with recall calculation enabled
-	// According to docs, recall should be returned in the response when enable_recall_calculation is true
-	// Request "vector" and "id" as output fields to ensure both are returned
+	// Use the NewSearchOption pattern similar to the docs
+	searchOption := NewSearchOption(
+		lt.collection, // collectionName
+		10,            // limit (topK)
+		[]entity.Vector{entity.FloatVector(queryVector)},
+	).
+		WithConsistencyLevel(entity.ClStrong).
+		WithANNSField("vector").
+		WithSearchParam("enable_recall_calculation", "true").
+		WithSearchParam("level", strconv.Itoa(lt.level)).
+		WithOutputFields("vector", "id")
+
+	// Convert SearchOption to search parameters
+	searchParams := &CustomSearchParam{
+		level:                   lt.level,
+		enableRecallCalculation: true,
+		searchParams:            searchOption.searchParams,
+	}
+
+	// Execute search using the SDK's Search method
 	searchResults, err := lt.client.Search(
 		ctx,
-		lt.collection,
-		[]string{},               // partition names (empty for all partitions)
-		"",                       // expr (empty for no filter)
-		[]string{"vector", "id"}, // output fields - request "vector" and "id" to get both back
-		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",      // vector field name
-		lt.metricType, // metric type
-		10,            // topK
+		searchOption.collectionName,
+		searchOption.partitions,
+		searchOption.expr,
+		searchOption.outputFields,
+		searchOption.vectors,
+		searchOption.annsField,
+		lt.metricType,
+		searchOption.limit,
 		searchParams,
+		client.WithSearchQueryConsistencyLevel(searchOption.consistencyLevel),
 	)
 
 	latency := time.Since(searchStart)
