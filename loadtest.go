@@ -322,28 +322,76 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 		if fieldName == "recalls" || fieldName == "recall" {
 			// Try to extract the recall value
 			if field.Len() > 0 {
-				if val, err := field.Get(0); err == nil {
-					if queryNum == 1 {
-						fmt.Printf("Found recall field '%s', value: %v (type: %T)\n", fieldName, val, val)
+				// ColumnDynamic needs special handling - it's a JSON field
+				if dynamicCol, ok := field.(*entity.ColumnDynamic); ok {
+					// Try GetAsDouble first (most common for numeric JSON values)
+					if val, err := dynamicCol.GetAsDouble(0); err == nil {
+						if queryNum == 1 {
+							fmt.Printf("Found recall field '%s', value: %f (via GetAsDouble)\n", fieldName, val)
+						}
+						return val
 					}
-					// Try to convert to float64
-					switch v := val.(type) {
-					case float64:
-						return v
-					case float32:
-						return float64(v)
-					case int:
-						return float64(v) / 100.0 // Convert from percentage
-					case int64:
-						return float64(v) / 100.0 // Convert from percentage
-					case string:
-						// Try to parse as float
-						if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+
+					// Try GetAsString and parse
+					if strVal, err := dynamicCol.GetAsString(0); err == nil {
+						if parsed, err := strconv.ParseFloat(strVal, 64); err == nil {
+							if queryNum == 1 {
+								fmt.Printf("Found recall field '%s', value: %f (via GetAsString->ParseFloat)\n", fieldName, parsed)
+							}
 							return parsed
 						}
+						if queryNum == 1 {
+							fmt.Printf("Recall field '%s' string value: %s (could not parse)\n", fieldName, strVal)
+						}
 					}
-				} else if queryNum == 1 {
-					fmt.Printf("Error getting value from recall field: %v\n", err)
+
+					// Try Get() and handle the interface{}
+					if val, err := dynamicCol.Get(0); err == nil {
+						if queryNum == 1 {
+							fmt.Printf("Found recall field '%s', raw value: %v (type: %T)\n", fieldName, val, val)
+						}
+						// Try to convert to float64
+						switch v := val.(type) {
+						case float64:
+							return v
+						case float32:
+							return float64(v)
+						case int:
+							return float64(v) / 100.0 // Convert from percentage
+						case int64:
+							return float64(v) / 100.0 // Convert from percentage
+						case string:
+							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+								return parsed
+							}
+						}
+					} else if queryNum == 1 {
+						fmt.Printf("Error getting value from recall field: %v\n", err)
+					}
+				} else {
+					// Not a ColumnDynamic, try regular Get()
+					if val, err := field.Get(0); err == nil {
+						if queryNum == 1 {
+							fmt.Printf("Found recall field '%s', value: %v (type: %T)\n", fieldName, val, val)
+						}
+						// Try to convert to float64
+						switch v := val.(type) {
+						case float64:
+							return v
+						case float32:
+							return float64(v)
+						case int:
+							return float64(v) / 100.0
+						case int64:
+							return float64(v) / 100.0
+						case string:
+							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+								return parsed
+							}
+						}
+					} else if queryNum == 1 {
+						fmt.Printf("Error getting value from recall field: %v\n", err)
+					}
 				}
 			} else if queryNum == 1 {
 				fmt.Printf("Recall field '%s' has length 0\n", fieldName)
