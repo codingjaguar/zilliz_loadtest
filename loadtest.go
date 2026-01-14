@@ -15,7 +15,6 @@ import (
 type LoadTester struct {
 	client     client.Client
 	collection string
-	level      int
 	vectorDim  int
 	metricType entity.MetricType
 }
@@ -69,7 +68,7 @@ func createZillizClient(apiKey, databaseURL string) (client.Client, error) {
 	return milvusClient, nil
 }
 
-func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim int, metricTypeStr string) (*LoadTester, error) {
+func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metricTypeStr string) (*LoadTester, error) {
 	milvusClient, err := createZillizClient(apiKey, databaseURL)
 	if err != nil {
 		return nil, err
@@ -91,7 +90,6 @@ func NewLoadTester(apiKey, databaseURL, collection string, level int, vectorDim 
 	return &LoadTester{
 		client:     milvusClient,
 		collection: collection,
-		level:      level,
 		vectorDim:  vectorDim,
 		metricType: metricType,
 	}, nil
@@ -104,7 +102,7 @@ func (lt *LoadTester) Close() {
 }
 
 func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration) (TestResult, error) {
-	// Calculate interval between requests to achieve target QPS
+	// Calculate interval between requests to achieve exact target QPS
 	interval := time.Second / time.Duration(targetQPS)
 
 	// Create context with timeout
@@ -117,8 +115,9 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	startTime := time.Now()
 	queryCount := 0
 	var mu sync.Mutex
+	queriesFired := 0
 
-	// Start query workers
+	// Simple rate limiter: fire exactly one query per interval
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -131,6 +130,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 				mu.Lock()
 				queryCount++
 				currentQuery := queryCount
+				queriesFired++
 				mu.Unlock()
 
 				wg.Add(1)
@@ -148,6 +148,10 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	// Wait for test duration
 	<-testCtx.Done()
+
+	mu.Lock()
+	totalFired := queriesFired
+	mu.Unlock()
 
 	// Wait for all queries to complete (with timeout)
 	done := make(chan struct{})
@@ -192,8 +196,15 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	p99 := calculatePercentile(latencies, 99)
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
-	fmt.Printf("Completed: %d queries in %v (actual QPS: %.2f, errors: %d)\n",
-		len(latencies), elapsed, actualQPS, errors)
+	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, len(latencies), elapsed)
+	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS | Errors: %d\n", targetQPS, actualQPS, errors)
+
+	// Explain what happened
+	if totalFired > len(latencies) {
+		pending := totalFired - len(latencies)
+		fmt.Printf("Note: %d queries were still in flight when test ended (%.1f%% completion rate)\n",
+			pending, float64(len(latencies))/float64(totalFired)*100)
+	}
 
 	return TestResult{
 		QPS:          targetQPS,
@@ -204,38 +215,30 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}, nil
 }
 
-// CustomSearchParam implements SearchParam interface with level
-type CustomSearchParam struct {
-	level int
+// EmptySearchParam implements SearchParam interface with no parameters (defaults to level 1)
+type EmptySearchParam struct{}
+
+func (e *EmptySearchParam) Params() map[string]interface{} {
+	return make(map[string]interface{})
 }
 
-func (c *CustomSearchParam) Params() map[string]interface{} {
-	params := make(map[string]interface{})
-	params["level"] = c.level
-	return params
+func (e *EmptySearchParam) AddRadius(radius float64) {
+	// Not used
 }
 
-func (c *CustomSearchParam) AddRadius(radius float64) {
-	// Not used for AUTOINDEX
-}
-
-func (c *CustomSearchParam) AddRangeFilter(rangeFilter float64) {
-	// Not used for AUTOINDEX
+func (e *EmptySearchParam) AddRangeFilter(rangeFilter float64) {
+	// Not used
 }
 
 func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResult {
 	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
 
-	// Create search parameters with level
-	searchParams := &CustomSearchParam{
-		level: lt.level,
-	}
-
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Execute search
+	// Execute search with empty search params (defaults to level 1 for latency optimization)
+	emptyParams := &EmptySearchParam{}
 	_, err := lt.client.Search(
 		ctx,
 		lt.collection,
@@ -246,7 +249,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		"vector",      // vector field name
 		lt.metricType, // metric type
 		10,            // topK
-		searchParams,
+		emptyParams,   // empty search params - defaults to level 1
 	)
 
 	latency := time.Since(searchStart)

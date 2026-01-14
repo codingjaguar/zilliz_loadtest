@@ -110,18 +110,6 @@ func runLoadTestFlow() {
 		os.Exit(1)
 	}
 
-	// Ask for level parameter (1-10)
-	levelInput := promptInput("Enter Level (1-10, where 10 optimizes for recall) [default: 5]: ", false)
-	level := 5 // default
-	if levelInput != "" {
-		parsedLevel, err := strconv.Atoi(levelInput)
-		if err != nil || parsedLevel < 1 || parsedLevel > 10 {
-			fmt.Fprintf(os.Stderr, "Error: Level must be an integer between 1 and 10. Using default: 5\n")
-		} else {
-			level = parsedLevel
-		}
-	}
-
 	// Ask for duration (optional)
 	durationInput := promptInput("Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: ", false)
 	duration := 30 * time.Second
@@ -135,7 +123,7 @@ func runLoadTestFlow() {
 	}
 
 	// Run the load test
-	if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, level, duration, vectorDim, metricType); err != nil {
+	if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, duration, vectorDim, metricType); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -194,21 +182,20 @@ func parseQPSLevels(input string) []int {
 	return qpsLevels
 }
 
-func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level int, duration time.Duration, vectorDim int, metricType string) error {
+func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, duration time.Duration, vectorDim int, metricType string) error {
 	fmt.Printf("\n\nStarting Zilliz Cloud Load Test\n")
 	fmt.Printf("==============================\n")
 	fmt.Printf("Database URL: %s\n", databaseURL)
 	fmt.Printf("Collection: %s\n", collection)
 	fmt.Printf("Vector Dimension: %d\n", vectorDim)
 	fmt.Printf("Metric Type: %s\n", metricType)
-	fmt.Printf("Level: %d\n", level)
 	fmt.Printf("Duration per QPS: %v\n", duration)
 	fmt.Printf("QPS Levels: %v\n\n", qpsLevels)
 
 	ctx := context.Background()
 
 	// Initialize load tester
-	tester, err := NewLoadTester(apiKey, databaseURL, collection, level, vectorDim, metricType)
+	tester, err := NewLoadTester(apiKey, databaseURL, collection, vectorDim, metricType)
 	if err != nil {
 		return fmt.Errorf("failed to initialize load tester: %w", err)
 	}
@@ -218,7 +205,7 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level 
 	var allResults []TestResult
 	for _, qps := range qpsLevels {
 		fmt.Printf("\n--- Running test at %d QPS for %v ---\n", qps, duration)
-		
+
 		result, err := tester.RunTest(ctx, qps, duration)
 		if err != nil {
 			fmt.Printf("Error running test at %d QPS: %v\n", qps, err)
@@ -232,7 +219,7 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level 
 	fmt.Printf("\n\n==============================\n")
 	fmt.Printf("Load Test Results Summary\n")
 	fmt.Printf("==============================\n\n")
-	
+
 	displayResults(allResults)
 
 	return nil
@@ -240,9 +227,9 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level 
 
 func displayResults(results []TestResult) {
 	fmt.Printf("%-10s | %-12s | %-12s | %-15s\n", "QPS", "P95 (ms)", "P99 (ms)", "Total Queries")
-	fmt.Printf("%-10s-+-%-12s-+-%-12s-+-%-15s\n", 
+	fmt.Printf("%-10s-+-%-12s-+-%-12s-+-%-15s\n",
 		"----------", "------------", "------------", "---------------")
-	
+
 	for _, result := range results {
 		fmt.Printf("%-10d | %-12.2f | %-12.2f | %-15d\n",
 			result.QPS,
