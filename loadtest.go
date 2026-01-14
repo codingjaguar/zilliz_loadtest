@@ -234,8 +234,6 @@ func (c *CustomSearchParam) AddRangeFilter(rangeFilter float64) {
 }
 
 func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResult {
-	start := time.Now()
-
 	// Generate a random query vector (dummy vector for testing)
 	// In a real scenario, you'd use actual query vectors from your dataset
 	queryVector := generateRandomVector(lt.vectorDim)
@@ -249,13 +247,18 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		enableRecallCalculation: true,
 	}
 
+	// Measure latency only for the search operation (not including vector generation)
+	searchStart := time.Now()
+	
 	// Execute search
+	// When enable_recall_calculation is true, we need to request "recalls" as an output field
+	// to get the recall values in the response (even though it's not a collection field)
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
-		[]string{}, // partition names (empty for all partitions)
-		"",         // expr (empty for no filter)
-		[]string{}, // output fields (empty for IDs and scores only)
+		[]string{},        // partition names (empty for all partitions)
+		"",                 // expr (empty for no filter)
+		[]string{"recalls"}, // output fields - request "recalls" to get recall calculation results
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -263,7 +266,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		searchParams,
 	)
 
-	latency := time.Since(start)
+	latency := time.Since(searchStart)
 
 	if err != nil {
 		return QueryResult{
@@ -275,19 +278,19 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Extract recall from search results
 	// When enable_recall_calculation is true, Zilliz returns the recall in the response
 	// According to docs: https://docs.zilliz.com/docs/tune-recall-rate#tune-recall-rate
+	// The recall is returned as "recalls" (plural) - it may be in Fields or as metadata
 	recall := 0.0
 
-	if len(searchResults) > 0 && searchResults[0].ResultCount > 0 {
-		// The recall is returned in the Fields as a column when enable_recall_calculation is true
-		// According to the docs, it's returned as "recalls" (plural) in the response
-		// Try both "recall" and "recalls" to handle different SDK versions
-		fields := searchResults[0].Fields
-		if fields != nil {
+	if len(searchResults) > 0 {
+		result := searchResults[0]
+		
+		// Try to get recall from Fields
+		if result.Fields != nil {
 			// Try "recalls" first (as shown in Python docs)
-			recallColumn := fields.GetColumn("recalls")
+			recallColumn := result.Fields.GetColumn("recalls")
 			if recallColumn == nil {
-				// Fallback to "recall" (singular)
-				recallColumn = fields.GetColumn("recall")
+				// Fallback to "recall" (singular) in case SDK version differs
+				recallColumn = result.Fields.GetColumn("recall")
 			}
 
 			if recallColumn != nil {
@@ -305,9 +308,22 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							recall = val
 						}
 					}
+				} else if int64Column, ok := recallColumn.(*entity.ColumnInt64); ok {
+					// Some SDK versions might return as int64 (0-100 scale)
+					if int64Column.Len() > 0 {
+						if val, err := int64Column.Get(0); err == nil {
+							if intVal, ok := val.(int64); ok {
+								recall = float64(intVal) / 100.0 // Convert from percentage
+							}
+						}
+					}
 				}
 			}
 		}
+		
+		// If recall is still 0, it might be that the field doesn't exist or wasn't returned
+		// This could happen if enable_recall_calculation isn't working as expected
+		// or if the SDK version handles it differently
 	}
 
 	return QueryResult{
