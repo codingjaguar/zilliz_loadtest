@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
@@ -490,6 +494,177 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 	}
 
 	return 0.0
+}
+
+// dumpRawResponse dumps the entire raw gRPC protobuf response
+func (lt *LoadTester) dumpRawResponse(ctx context.Context, queryVector []float32, searchParams *CustomSearchParam) {
+	fmt.Printf("\n=== DUMPING RAW gRPC RESPONSE ===\n")
+
+	// Try to access the underlying GrpcClient to call gRPC directly
+	clientValue := reflect.ValueOf(lt.client)
+	if clientValue.Kind() == reflect.Ptr {
+		clientValue = clientValue.Elem()
+	}
+
+	// Get the Service field (milvuspb.MilvusServiceClient)
+	serviceField := clientValue.FieldByName("Service")
+	if !serviceField.IsValid() || serviceField.IsNil() {
+		fmt.Printf("Cannot access Service field - client may not be GrpcClient\n")
+		fmt.Printf("Client type: %T\n", lt.client)
+		return
+	}
+
+	// We need to prepare the search request
+	// Let's use reflection to call prepareSearchRequest or recreate it
+	// For now, let's try to call the service directly with a manually constructed request
+
+	// Prepare search request manually (similar to prepareSearchRequest in SDK)
+	params := searchParams.Params()
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		fmt.Printf("Error marshaling params: %v\n", err)
+		return
+	}
+
+	searchParamsKV := entity.MapKvPairs(map[string]string{
+		"anns_field":    "vector",
+		"topk":          "10",
+		"params":        string(paramsJSON),
+		"metric_type":   string(lt.metricType),
+		"round_decimal": "-1",
+	})
+
+	// Convert vector to placeholder group bytes using the vector's Serialize method
+	floatVec := entity.FloatVector(queryVector)
+	placeholderValue := &commonpb.PlaceholderValue{
+		Tag:    "$0",
+		Type:   commonpb.PlaceholderType_FloatVector,
+		Values: [][]byte{floatVec.Serialize()},
+	}
+
+	placeholderGroup := &commonpb.PlaceholderGroup{
+		Placeholders: []*commonpb.PlaceholderValue{placeholderValue},
+	}
+
+	// Use proto.Marshal like the SDK does
+	placeholderGroupBytes, err := proto.Marshal(placeholderGroup)
+	if err != nil {
+		fmt.Printf("Error marshaling placeholder group: %v\n", err)
+		return
+	}
+
+	req := &milvuspb.SearchRequest{
+		CollectionName:   lt.collection,
+		PartitionNames:   []string{},
+		Dsl:              "",
+		PlaceholderGroup: placeholderGroupBytes,
+		DslType:          commonpb.DslType_BoolExprV1,
+		OutputFields:     []string{"recalls", "vector"},
+		SearchParams:     searchParamsKV,
+		Nq:               1,
+	}
+
+	// Try to call the service directly
+	service := serviceField.Interface()
+	searchMethod := reflect.ValueOf(service).MethodByName("Search")
+	if !searchMethod.IsValid() {
+		fmt.Printf("Search method not found on service\n")
+		return
+	}
+
+	// Call Search(ctx, req)
+	results := searchMethod.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		reflect.ValueOf(req),
+	})
+
+	if len(results) != 2 {
+		fmt.Printf("Unexpected return values from Search\n")
+		return
+	}
+
+	// Check for error
+	if !results[1].IsNil() {
+		err := results[1].Interface().(error)
+		fmt.Printf("Error calling Search: %v\n", err)
+		return
+	}
+
+	// Get the response - use reflection to get the actual type
+	respValue := results[0]
+	resp := respValue.Interface()
+
+	fmt.Printf("Response type: %T\n", resp)
+
+	// Use reflection to dump the entire response structure
+	fmt.Printf("\n=== RAW gRPC Response Structure ===\n")
+	fmt.Printf("Response type: %T\n", resp)
+
+	respVal := reflect.ValueOf(resp)
+	if respVal.Kind() == reflect.Ptr {
+		respVal = respVal.Elem()
+	}
+
+	if respVal.IsValid() {
+		respType := respVal.Type()
+		fmt.Printf("Response type (after Elem): %s\n", respType)
+		fmt.Printf("Number of fields: %d\n", respType.NumField())
+
+		// Print all fields
+		for i := 0; i < respType.NumField(); i++ {
+			field := respType.Field(i)
+			fieldVal := respVal.Field(i)
+
+			if fieldVal.CanInterface() {
+				fieldInterface := fieldVal.Interface()
+				fmt.Printf("\nField[%d]: %s (type: %s)\n", i, field.Name, fieldVal.Type())
+
+				// Try to get more details based on type
+				switch fieldVal.Kind() {
+				case reflect.Slice:
+					fmt.Printf("  Slice length: %d\n", fieldVal.Len())
+					if fieldVal.Len() > 0 && fieldVal.Len() <= 5 {
+						for j := 0; j < fieldVal.Len(); j++ {
+							elem := fieldVal.Index(j)
+							if elem.CanInterface() {
+								fmt.Printf("  [%d]: %v\n", j, elem.Interface())
+							}
+						}
+					}
+				case reflect.Map:
+					fmt.Printf("  Map with %d keys\n", fieldVal.Len())
+					if fieldVal.Len() > 0 && fieldVal.Len() <= 10 {
+						for _, key := range fieldVal.MapKeys() {
+							val := fieldVal.MapIndex(key)
+							if val.CanInterface() {
+								fmt.Printf("  [%v]: %v\n", key.Interface(), val.Interface())
+							}
+						}
+					}
+				case reflect.Ptr:
+					if !fieldVal.IsNil() {
+						elem := fieldVal.Elem()
+						if elem.CanInterface() {
+							fmt.Printf("  Value: %v\n", elem.Interface())
+						}
+					} else {
+						fmt.Printf("  Value: <nil>\n")
+					}
+				default:
+					fmt.Printf("  Value: %v\n", fieldInterface)
+				}
+			} else {
+				fmt.Printf("Field[%d]: %s (type: %s) - cannot access value\n", i, field.Name, fieldVal.Type())
+			}
+		}
+
+		// Try to marshal the entire response as JSON (might work for some fields)
+		if jsonData, err := json.MarshalIndent(resp, "", "  "); err == nil {
+			fmt.Printf("\n=== Response as JSON (best effort) ===\n")
+			fmt.Printf("%s\n", string(jsonData))
+		}
+	}
+	fmt.Printf("==========================================\n\n")
 }
 
 // extractIDs extracts IDs from a column into a slice for comparison
