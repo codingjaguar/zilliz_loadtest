@@ -254,14 +254,15 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	searchStart := time.Now()
 	
 	// Execute search
-	// When enable_recall_calculation is true, we need to request "recalls" as an output field
-	// to get the recall values in the response (even though it's not a collection field)
+	// When enable_recall_calculation is true, we need to explicitly request "recalls" as an output field
+	// According to Zilliz docs, recall is returned in the response when enable_recall_calculation is true
+	// We need to request it as an output field even though it's not a collection field
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
 		[]string{},        // partition names (empty for all partitions)
 		"",                 // expr (empty for no filter)
-		[]string{"recalls"}, // output fields - request "recalls" to get recall calculation results
+		[]string{"recalls"}, // output fields - must request "recalls" to get recall calculation results
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -289,11 +290,51 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	if len(searchResults) > 0 {
 		result := searchResults[0]
 		
+		// Debug: Print full search result structure
+		if queryNum == 1 {
+			fmt.Printf("\n=== DEBUG: Full Search Result Structure ===\n")
+			fmt.Printf("Number of search results: %d\n", len(searchResults))
+			fmt.Printf("ResultCount: %d\n", result.ResultCount)
+			fmt.Printf("Scores: %v (length: %d)\n", result.Scores, len(result.Scores))
+			fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
+			if result.IDs != nil {
+				fmt.Printf("IDs type: %T, Len: %d\n", result.IDs, result.IDs.Len())
+			}
+			fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
+			if result.Fields != nil {
+				fmt.Printf("Fields type: %T\n", result.Fields)
+				// Try to see what columns are available - check common names
+				testColumns := []string{"recalls", "recall", "vector", "id"}
+				for _, colName := range testColumns {
+					if col := result.Fields.GetColumn(colName); col != nil {
+						fmt.Printf("  Found column '%s': type %T, length %d\n", colName, col, col.Len())
+					}
+				}
+			}
+			fmt.Printf("Err: %v\n", result.Err)
+			fmt.Printf("SearchResult type: %T\n", result)
+			fmt.Printf("==========================================\n\n")
+		}
+		
 		// Try to get recall from Fields
 		if result.Fields != nil {
+			// Debug: List all available columns in Fields
+			if queryNum == 1 {
+				fmt.Printf("\n=== DEBUG: All Columns in Fields ===\n")
+				// Fields doesn't have a direct method to list all columns, but we can try common names
+				// or check the structure
+				fmt.Printf("Fields type: %T\n", result.Fields)
+				// Try to see if there's a way to iterate columns
+				// For now, just try the known column names
+				fmt.Printf("Trying to get column 'recalls'...\n")
+			}
+			
 			// Try "recalls" first (as shown in Python docs)
 			recallColumn := result.Fields.GetColumn("recalls")
 			if recallColumn == nil {
+				if queryNum == 1 {
+					fmt.Printf("Column 'recalls' not found, trying 'recall'...\n")
+				}
 				// Fallback to "recall" (singular) in case SDK version differs
 				recallColumn = result.Fields.GetColumn("recall")
 			}
