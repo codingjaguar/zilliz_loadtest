@@ -253,12 +253,13 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 	// Execute search with recall calculation enabled
 	// According to docs, recall should be returned in the response when enable_recall_calculation is true
+	// We need to explicitly request "recalls" as an output field to get the recall data
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
-		[]string{}, // partition names (empty for all partitions)
-		"",         // expr (empty for no filter)
-		[]string{}, // output fields (empty for performance)
+		[]string{},                    // partition names (empty for all partitions)
+		"",                            // expr (empty for no filter)
+		[]string{"recalls", "vector"}, // output fields - request "recalls" and "vector" to verify Fields are populated
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -293,45 +294,72 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 
 	result := searchResults[0]
 
-	// According to Zilliz docs, recall should be in the Fields
-	// Try to find it in the Fields
-	if result.Fields != nil {
-		// Check for "recalls" or "recall" field
-		for _, field := range result.Fields {
-			fieldName := field.Name()
-			if fieldName == "recalls" || fieldName == "recall" {
-				// Try to extract the recall value
-				if field.Len() > 0 {
-					if val, err := field.Get(0); err == nil {
-						// Try to convert to float64
-						switch v := val.(type) {
-						case float64:
-							return v
-						case float32:
-							return float64(v)
-						case int:
-							return float64(v) / 100.0 // Convert from percentage
-						case int64:
-							return float64(v) / 100.0 // Convert from percentage
-						case string:
-							// Try to parse as float
-							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
-								return parsed
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Debug: Print all field names for first query
+	// According to Zilliz docs, recall should be in the Fields when we request "recalls" as output field
+	if len(result.Fields) == 0 {
 		if queryNum == 1 {
-			fmt.Printf("\n=== Available Fields in Search Result ===\n")
-			for i, field := range result.Fields {
-				fmt.Printf("  Fields[%d]: name=%s, type=%T, len=%d\n", i, field.Name(), field, field.Len())
-			}
+			fmt.Printf("\n=== DEBUG: Fields is nil or empty ===\n")
+			fmt.Printf("This might mean the SDK isn't returning fields even though we requested 'recalls'\n")
+			fmt.Printf("ResultCount: %d\n", result.ResultCount)
+			fmt.Printf("Scores count: %d\n", len(result.Scores))
+			fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
 			fmt.Printf("========================================\n\n")
 		}
+		return 0.0
+	}
+
+	// Debug: Print all field names for first query
+	if queryNum == 1 {
+		fmt.Printf("\n=== Available Fields in Search Result ===\n")
+		for i, field := range result.Fields {
+			fmt.Printf("  Fields[%d]: name=%s, type=%T, len=%d\n", i, field.Name(), field, field.Len())
+		}
+		fmt.Printf("========================================\n\n")
+	}
+
+	// Check for "recalls" or "recall" field
+	for _, field := range result.Fields {
+		fieldName := field.Name()
+		if fieldName == "recalls" || fieldName == "recall" {
+			// Try to extract the recall value
+			if field.Len() > 0 {
+				if val, err := field.Get(0); err == nil {
+					if queryNum == 1 {
+						fmt.Printf("Found recall field '%s', value: %v (type: %T)\n", fieldName, val, val)
+					}
+					// Try to convert to float64
+					switch v := val.(type) {
+					case float64:
+						return v
+					case float32:
+						return float64(v)
+					case int:
+						return float64(v) / 100.0 // Convert from percentage
+					case int64:
+						return float64(v) / 100.0 // Convert from percentage
+					case string:
+						// Try to parse as float
+						if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+							return parsed
+						}
+					}
+				} else if queryNum == 1 {
+					fmt.Printf("Error getting value from recall field: %v\n", err)
+				}
+			} else if queryNum == 1 {
+				fmt.Printf("Recall field '%s' has length 0\n", fieldName)
+			}
+		}
+	}
+
+	if queryNum == 1 {
+		fmt.Printf("Recall field not found. Available fields: ")
+		for i, field := range result.Fields {
+			if i > 0 {
+				fmt.Printf(", ")
+			}
+			fmt.Printf("%s", field.Name())
+		}
+		fmt.Printf("\n")
 	}
 
 	return 0.0
