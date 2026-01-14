@@ -271,9 +271,11 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Estimate recall by comparing with high-recall search (level 10)
 	// We do this for a sample of queries to avoid performance impact
 	recall := 0.0
-	const recallSampleRate = 100 // Calculate recall for every Nth query
+	const recallSampleRate = 10 // Calculate recall for every Nth query (reduced for better sampling)
 
-	if len(searchResults) > 0 && queryNum%recallSampleRate == 0 {
+	// Calculate recall for first query and then every Nth query
+	// This ensures we always have at least one recall measurement
+	if len(searchResults) > 0 && (queryNum == 1 || (queryNum-1)%recallSampleRate == 0) {
 		recall = lt.estimateRecall(ctx, queryVector, searchResults[0])
 	}
 
@@ -285,6 +287,11 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 // estimateRecall estimates recall by comparing approximate results with high-recall results (level 10)
 func (lt *LoadTester) estimateRecall(ctx context.Context, queryVector []float32, approximateResult client.SearchResult) float64 {
+	// Check if approximate result has IDs
+	if approximateResult.IDs == nil {
+		return 0.0
+	}
+
 	// Do a high-recall search (level 10) to get ground truth
 	highRecallParams := &CustomSearchParam{
 		level: 10, // Highest recall level
@@ -308,6 +315,9 @@ func (lt *LoadTester) estimateRecall(ctx context.Context, queryVector []float32,
 	}
 
 	highRecallResult := highRecallResults[0]
+	if highRecallResult.IDs == nil {
+		return 0.0
+	}
 
 	// Extract IDs from both results
 	approxIDs := extractIDs(approximateResult.IDs)
@@ -346,17 +356,29 @@ func extractIDs(idsColumn entity.Column) []interface{} {
 	}
 
 	var ids []interface{}
+
+	// Try different column types that might be used for IDs
+	// IDColumns returns either ColumnInt64 or ColumnVarChar
 	switch col := idsColumn.(type) {
 	case *entity.ColumnInt64:
-		for i := 0; i < col.Len(); i++ {
-			if val, err := col.Get(i); err == nil {
-				ids = append(ids, val)
-			}
+		// Use Data() method for better performance
+		data := col.Data()
+		for _, val := range data {
+			ids = append(ids, val)
 		}
-	case *entity.ColumnString:
-		for i := 0; i < col.Len(); i++ {
-			if val, err := col.Get(i); err == nil {
-				ids = append(ids, val)
+	case *entity.ColumnVarChar:
+		// VarChar is used for string IDs
+		data := col.Data()
+		for _, val := range data {
+			ids = append(ids, val)
+		}
+	default:
+		// Fallback: try to use the generic Column interface methods
+		if col.Len() > 0 {
+			for i := 0; i < col.Len(); i++ {
+				if val, err := col.Get(i); err == nil {
+					ids = append(ids, val)
+				}
 			}
 		}
 	}
