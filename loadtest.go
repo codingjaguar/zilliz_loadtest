@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -233,11 +232,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		level: lt.level,
 	}
 
-	// Log the search payload for the first query
-	if queryNum == 1 {
-		lt.logSearchPayload(queryVector, searchParams)
-	}
-
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
@@ -245,9 +239,9 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	_, err := lt.client.Search(
 		ctx,
 		lt.collection,
-		[]string{}, // partition names (empty for all partitions)
-		"",         // expr (empty for no filter)
-		[]string{}, // output fields - empty since we don't need any fields
+		[]string{},     // partition names (empty for all partitions)
+		"",             // expr (empty for no filter)
+		[]string{"id"}, // output fields - request "id" field
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -258,10 +252,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	latency := time.Since(searchStart)
 
 	if err != nil {
-		// Print error for first few queries to help debug
-		if queryNum <= 3 {
-			fmt.Printf("Query %d failed: %v\n", queryNum, err)
-		}
 		return QueryResult{
 			Latency: latency,
 			Error:   err,
@@ -271,43 +261,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	return QueryResult{
 		Latency: latency,
 	}
-}
-
-// logSearchPayload logs the search request payload before sending it
-func (lt *LoadTester) logSearchPayload(queryVector []float32, searchParams *CustomSearchParam) {
-	fmt.Printf("\n=== SEARCH REQUEST PAYLOAD (Query 1) ===\n")
-
-	// Build the params that will be sent
-	params := searchParams.Params()
-	paramsJSON, err := json.MarshalIndent(params, "", "  ")
-	if err != nil {
-		fmt.Printf("Error marshaling params: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Collection: %s\n", lt.collection)
-	fmt.Printf("Partitions: []\n")
-	fmt.Printf("Expr: \"\"\n")
-	fmt.Printf("OutputFields: [\"*\"]\n")
-	fmt.Printf("VectorField: \"vector\"\n")
-	fmt.Printf("MetricType: %s\n", lt.metricType)
-	fmt.Printf("TopK: 10\n")
-	fmt.Printf("SearchParams:\n")
-	fmt.Printf("  anns_field: \"vector\"\n")
-	fmt.Printf("  topk: \"10\"\n")
-	fmt.Printf("  params: %s\n", string(paramsJSON))
-	fmt.Printf("  metric_type: \"%s\"\n", lt.metricType)
-	fmt.Printf("  round_decimal: \"-1\"\n")
-	fmt.Printf("Query Vector (first 5 dims): %v\n", queryVector[:min(5, len(queryVector))])
-	fmt.Printf("========================================\n\n")
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // extractIDs extracts IDs from a column into a slice for comparison
