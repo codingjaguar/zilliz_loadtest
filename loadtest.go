@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -214,21 +212,14 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}, nil
 }
 
-// CustomSearchParam implements SearchParam interface with level and enable_recall_calculation
+// CustomSearchParam implements SearchParam interface with level parameter
 type CustomSearchParam struct {
-	level                   int
-	enableRecallCalculation bool
+	level int
 }
 
 func (c *CustomSearchParam) Params() map[string]interface{} {
 	params := make(map[string]interface{})
 	params["level"] = c.level
-	// Try both boolean and string "true" to see which format works
-	if c.enableRecallCalculation {
-		params["enable_recall_calculation"] = true
-		// Also try as string in case the server expects it
-		// params["enable_recall_calculation"] = "true"
-	}
 	return params
 }
 
@@ -241,44 +232,26 @@ func (c *CustomSearchParam) AddRangeFilter(rangeFilter float64) {
 }
 
 func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResult {
-	// Generate a random query vector (dummy vector for testing)
-	// In a real scenario, you'd use actual query vectors from your dataset
+	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
 
-	// Create search parameters with level and enable_recall_calculation
+	// Create search parameters with level
 	// The level parameter (1-10) optimizes for recall vs latency
 	// Level 10 optimizes for recall at the expense of latency, level 1 optimizes for latency
-	// enable_recall_calculation tells Zilliz to calculate and return the recall rate
 	searchParams := &CustomSearchParam{
-		level:                   lt.level,
-		enableRecallCalculation: true,
+		level: lt.level,
 	}
 
-	// Debug: Verify search parameters are being set correctly
-	if queryNum == 1 {
-		params := searchParams.Params()
-		fmt.Printf("\n=== DEBUG: Search Parameters ===\n")
-		fmt.Printf("Params map: %+v\n", params)
-		fmt.Printf("Level: %d\n", params["level"])
-		fmt.Printf("enable_recall_calculation: %v\n", params["enable_recall_calculation"])
-		fmt.Printf("================================\n\n")
-	}
-
-	// Measure latency only for the search operation (not including vector generation)
-	// Use high-precision timing for accurate measurements
+	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Execute search
-	// When enable_recall_calculation is true, Zilliz should return recall automatically
-	// Try both with and without "recalls" in output fields - it may be returned automatically
-	// Note: Recall calculation requires ground truth data. Random query vectors won't have
-	// ground truth, so recall may always be 0 or not calculated.
+	// Execute approximate search at configured level
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
 		[]string{}, // partition names (empty for all partitions)
 		"",         // expr (empty for no filter)
-		[]string{}, // output fields - try empty first, recall should be returned automatically
+		[]string{}, // output fields (empty for performance)
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -286,8 +259,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		searchParams,
 	)
 
-	// Measure latency immediately after Search() returns
-	// This includes network round-trip and server processing time
 	latency := time.Since(searchStart)
 
 	if err != nil {
@@ -297,374 +268,99 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		}
 	}
 
-	// Extract recall from search results
-	// When enable_recall_calculation is true, Zilliz returns the recall in the response
-	// According to docs: https://docs.zilliz.com/docs/tune-recall-rate#tune-recall-rate
-	// The recall is returned as "recalls" (plural) - it may be in Fields or as metadata
+	// Estimate recall by comparing with high-recall search (level 10)
+	// We do this for a sample of queries to avoid performance impact
 	recall := 0.0
+	const recallSampleRate = 100 // Calculate recall for every Nth query
 
-	if len(searchResults) > 0 {
-		result := searchResults[0]
-
-		// Debug: Print full search result structure
-		if queryNum == 1 {
-			fmt.Printf("\n=== DEBUG: Full Search Result Structure ===\n")
-			fmt.Printf("Number of search results: %d\n", len(searchResults))
-			fmt.Printf("ResultCount: %d\n", result.ResultCount)
-			fmt.Printf("Scores: %v (length: %d)\n", result.Scores, len(result.Scores))
-			fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
-			if result.IDs != nil {
-				fmt.Printf("IDs type: %T, Len: %d\n", result.IDs, result.IDs.Len())
-			}
-			fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
-			if result.Fields != nil {
-				fmt.Printf("Fields type: %T\n", result.Fields)
-				// Try to see what columns are available - check common names
-				testColumns := []string{"recalls", "recall", "vector", "id"}
-				for _, colName := range testColumns {
-					if col := result.Fields.GetColumn(colName); col != nil {
-						fmt.Printf("  Found column '%s': type %T, length %d\n", colName, col, col.Len())
-					}
-				}
-			}
-			fmt.Printf("Err: %v\n", result.Err)
-			fmt.Printf("SearchResult type: %T\n", result)
-			fmt.Printf("==========================================\n\n")
-		}
-
-		// Try to get recall from Fields
-		// First, try with "recalls" in output fields if Fields is empty or doesn't contain recall
-		if result.Fields == nil {
-			if queryNum == 1 {
-				fmt.Printf("\n=== DEBUG: Fields is nil, trying search with 'recalls' in output fields ===\n")
-			}
-			// Retry with "recalls" explicitly requested as output field
-			searchResultsWithRecalls, retryErr := lt.client.Search(
-				ctx,
-				lt.collection,
-				[]string{},
-				"",
-				[]string{"recalls"}, // Explicitly request recalls as output field
-				[]entity.Vector{entity.FloatVector(queryVector)},
-				"vector",
-				lt.metricType,
-				10,
-				searchParams,
-			)
-			if retryErr == nil && len(searchResultsWithRecalls) > 0 {
-				result = searchResultsWithRecalls[0]
-			}
-		}
-
-		if result.Fields != nil {
-			// Debug: List all available columns in Fields
-			if queryNum == 1 {
-				fmt.Printf("\n=== DEBUG: All Columns in Fields ===\n")
-				// Fields doesn't have a direct method to list all columns, but we can try common names
-				// or check the structure
-				fmt.Printf("Fields type: %T\n", result.Fields)
-				// Try to see if there's a way to iterate columns
-				// For now, just try the known column names
-				fmt.Printf("Trying to get column 'recalls'...\n")
-			}
-
-			// Try "recalls" first (as shown in Python docs)
-			recallColumn := result.Fields.GetColumn("recalls")
-			if recallColumn == nil {
-				if queryNum == 1 {
-					fmt.Printf("Column 'recalls' not found, trying 'recall'...\n")
-				}
-				// Fallback to "recall" (singular) in case SDK version differs
-				recallColumn = result.Fields.GetColumn("recall")
-			}
-
-			if recallColumn != nil {
-				// Debug: Print recall column details for first query
-				if queryNum == 1 {
-					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
-					fmt.Printf("Recall column type: %T\n", recallColumn)
-					fmt.Printf("Recall column name: %s\n", recallColumn.Name())
-					fmt.Printf("Recall column length: %d\n", recallColumn.Len())
-				}
-
-				// The recall column is returned as ColumnDynamic (JSON field)
-				// Extract the first recall value (typically one per query, but may have one per result)
-				if dynamicColumn, ok := recallColumn.(*entity.ColumnDynamic); ok {
-					if dynamicColumn.Len() > 0 {
-						if queryNum == 1 {
-							fmt.Printf("ColumnDynamic found, length: %d\n", dynamicColumn.Len())
-						}
-
-						// Try to get as double (float64) - this should work for numeric JSON values
-						if val, err := dynamicColumn.GetAsDouble(0); err == nil {
-							recall = val
-							if queryNum == 1 {
-								fmt.Printf("Got recall via GetAsDouble(0): %f\n", recall)
-							}
-						} else {
-							if queryNum == 1 {
-								fmt.Printf("GetAsDouble(0) error: %v\n", err)
-							}
-
-							// Try GetAsString to see the raw JSON value
-							if strVal, err := dynamicColumn.GetAsString(0); err == nil {
-								if queryNum == 1 {
-									fmt.Printf("Got value as string: %s\n", strVal)
-								}
-								// Try to parse as float
-								if parsedVal, err := strconv.ParseFloat(strVal, 64); err == nil {
-									recall = parsedVal
-									if queryNum == 1 {
-										fmt.Printf("Parsed string to float64: %f\n", recall)
-									}
-								}
-							} else if queryNum == 1 {
-								fmt.Printf("GetAsString(0) error: %v\n", err)
-							}
-
-							// Fallback: try to get as interface{} and convert
-							if val, err := dynamicColumn.Get(0); err == nil {
-								if queryNum == 1 {
-									fmt.Printf("Got value via Get(0): %v (type: %T)\n", val, val)
-								}
-								switch v := val.(type) {
-								case float64:
-									recall = v
-									if queryNum == 1 {
-										fmt.Printf("Extracted as float64: %f\n", recall)
-									}
-								case float32:
-									recall = float64(v)
-									if queryNum == 1 {
-										fmt.Printf("Extracted as float32->float64: %f\n", recall)
-									}
-								case int64:
-									recall = float64(v) / 100.0 // Convert from percentage
-									if queryNum == 1 {
-										fmt.Printf("Extracted as int64 (percentage): %f\n", recall)
-									}
-								case int:
-									recall = float64(v) / 100.0 // Convert from percentage
-									if queryNum == 1 {
-										fmt.Printf("Extracted as int (percentage): %f\n", recall)
-									}
-								case string:
-									// Try to parse string as float
-									if parsedVal, err := strconv.ParseFloat(v, 64); err == nil {
-										recall = parsedVal
-										if queryNum == 1 {
-											fmt.Printf("Parsed string to float64: %f\n", recall)
-										}
-									}
-								default:
-									if queryNum == 1 {
-										fmt.Printf("Unknown type for recall value: %T, value: %v\n", v, v)
-									}
-								}
-							} else {
-								if queryNum == 1 {
-									fmt.Printf("Get(0) error: %v\n", err)
-									// Try accessing underlying ColumnJSONBytes directly
-									fmt.Printf("Trying to access underlying ColumnJSONBytes...\n")
-
-									// ColumnDynamic wraps ColumnJSONBytes - try to access the raw JSON
-									// Check if we can get the underlying JSON bytes
-									if jsonBytesCol, ok := recallColumn.(interface{ Data() [][]byte }); ok {
-										jsonData := jsonBytesCol.Data()
-										if len(jsonData) > 0 {
-											fmt.Printf("Found JSON bytes, length: %d\n", len(jsonData))
-											// Check all JSON values, not just the first
-											for i := 0; i < len(jsonData) && i < 10; i++ {
-												if len(jsonData[i]) > 0 {
-													maxLen := 500
-													if len(jsonData[i]) < maxLen {
-														maxLen = len(jsonData[i])
-													}
-													fmt.Printf("JSON[%d] (full): %s\n", i, string(jsonData[i]))
-												} else {
-													fmt.Printf("JSON[%d]: empty\n", i)
-												}
-											}
-										}
-									}
-
-									// Try ValueByIdx which might work for JSONBytes - check all indices
-									if jsonBytesCol, ok := recallColumn.(interface{ ValueByIdx(int) ([]byte, error) }); ok {
-										// Try all indices to find where the recall data is
-										for idx := 0; idx < dynamicColumn.Len() && idx < 10; idx++ {
-											if bytes, err := jsonBytesCol.ValueByIdx(idx); err == nil {
-												fmt.Printf("JSON bytes[%d]: %s\n", idx, string(bytes))
-												// Try to parse as JSON to extract recall
-												var jsonVal interface{}
-												if err := json.Unmarshal(bytes, &jsonVal); err == nil {
-													fmt.Printf("Parsed JSON[%d]: %v (type: %T)\n", idx, jsonVal, jsonVal)
-
-													// Try to extract recall from JSON - check various structures
-													if recallMap, ok := jsonVal.(map[string]interface{}); ok {
-														// Check for various possible field names
-														for _, fieldName := range []string{"recall", "recalls", "recall_rate", "recallRate"} {
-															if r, exists := recallMap[fieldName]; exists {
-																fmt.Printf("Found field '%s' in JSON[%d]: %v (type: %T)\n", fieldName, idx, r, r)
-																if rFloat, ok := r.(float64); ok {
-																	recall = rFloat
-																	fmt.Printf("Extracted recall from JSON map field '%s': %f\n", fieldName, recall)
-																	break
-																} else if rArray, ok := r.([]interface{}); ok && len(rArray) > 0 {
-																	if rFloat, ok := rArray[0].(float64); ok {
-																		recall = rFloat
-																		fmt.Printf("Extracted recall from JSON array in field '%s': %f\n", fieldName, recall)
-																		break
-																	}
-																}
-															}
-														}
-														// If map is not empty, print all keys
-														if len(recallMap) > 0 {
-															fmt.Printf("JSON[%d] map keys: ", idx)
-															for k := range recallMap {
-																fmt.Printf("%s ", k)
-															}
-															fmt.Printf("\n")
-														}
-													} else if rFloat, ok := jsonVal.(float64); ok {
-														recall = rFloat
-														fmt.Printf("Extracted recall as direct float64 from JSON[%d]: %f\n", idx, recall)
-													} else if rArray, ok := jsonVal.([]interface{}); ok && len(rArray) > 0 {
-														if rFloat, ok := rArray[0].(float64); ok {
-															recall = rFloat
-															fmt.Printf("Extracted recall from JSON array[0] in JSON[%d]: %f\n", idx, recall)
-														}
-													}
-												} else {
-													fmt.Printf("JSON unmarshal error for JSON[%d]: %v\n", idx, err)
-												}
-											} else {
-												fmt.Printf("ValueByIdx(%d) error: %v\n", idx, err)
-											}
-										}
-									}
-								}
-							}
-						}
-
-						// Try getting multiple values to see the pattern
-						if queryNum == 1 && dynamicColumn.Len() > 1 {
-							fmt.Printf("Trying to get all recall values:\n")
-							for i := 0; i < dynamicColumn.Len() && i < 3; i++ {
-								if val, err := dynamicColumn.Get(i); err == nil {
-									fmt.Printf("  recalls[%d]: %v (type: %T)\n", i, val, val)
-								} else {
-									fmt.Printf("  recalls[%d]: error - %v\n", i, err)
-								}
-								if strVal, err := dynamicColumn.GetAsString(i); err == nil {
-									fmt.Printf("  recalls[%d] as string: %s\n", i, strVal)
-								}
-							}
-						}
-					} else {
-						if queryNum == 1 {
-							fmt.Printf("ColumnDynamic length is 0\n")
-						}
-					}
-				} else if floatColumn, ok := recallColumn.(*entity.ColumnFloat); ok {
-					if floatColumn.Len() > 0 {
-						if val, err := floatColumn.ValueByIdx(0); err == nil {
-							recall = float64(val)
-							if queryNum == 1 {
-								fmt.Printf("Got recall from ColumnFloat: %f\n", recall)
-							}
-						}
-					}
-				} else if doubleColumn, ok := recallColumn.(*entity.ColumnDouble); ok {
-					if doubleColumn.Len() > 0 {
-						if val, err := doubleColumn.GetAsDouble(0); err == nil {
-							recall = val
-							if queryNum == 1 {
-								fmt.Printf("Got recall from ColumnDouble: %f\n", recall)
-							}
-						}
-					}
-				} else if int64Column, ok := recallColumn.(*entity.ColumnInt64); ok {
-					// Some SDK versions might return as int64 (0-100 scale)
-					if int64Column.Len() > 0 {
-						if val, err := int64Column.Get(0); err == nil {
-							if intVal, ok := val.(int64); ok {
-								recall = float64(intVal) / 100.0 // Convert from percentage
-								if queryNum == 1 {
-									fmt.Printf("Got recall from ColumnInt64: %f\n", recall)
-								}
-							}
-						}
-					}
-				} else {
-					if queryNum == 1 {
-						fmt.Printf("Unknown recall column type: %T\n", recallColumn)
-					}
-				}
-
-				if queryNum == 1 {
-					fmt.Printf("Final recall value: %f\n", recall)
-					if recall == 0.0 {
-						fmt.Printf("\n⚠️  WARNING: Recall is 0.0 - Possible reasons:\n")
-						fmt.Printf("  1. ⚠️  CRITICAL: Random query vectors don't have ground truth!\n")
-						fmt.Printf("     Recall calculation requires comparing results against known ground truth.\n")
-						fmt.Printf("     With random vectors, Zilliz cannot calculate recall because there's no\n")
-						fmt.Printf("     reference to compare against. Use actual query vectors from your dataset.\n")
-						fmt.Printf("  2. The enable_recall_calculation parameter may not be working\n")
-						fmt.Printf("  3. The recall data may be in a different format or location\n")
-						fmt.Printf("  4. The Go SDK may not fully support recall calculation yet (feature is in Public Preview)\n")
-						fmt.Printf("  5. The parameter might need to be nested differently in the request\n")
-					}
-					fmt.Printf("==========================================\n\n")
-				}
-			} else {
-				if queryNum == 1 {
-					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
-					fmt.Printf("recallColumn is nil!\n")
-					fmt.Printf("The 'recalls' column was not found in the search results.\n")
-					fmt.Printf("\nPossible issues:\n")
-					fmt.Printf("  1. ⚠️  Random query vectors don't have ground truth - recall cannot be calculated\n")
-					fmt.Printf("  2. enable_recall_calculation parameter may not be working\n")
-					fmt.Printf("  3. Recall might be returned in a different location (not in Fields)\n")
-					fmt.Printf("  4. Go SDK may not fully support this feature (Public Preview)\n")
-					fmt.Printf("\nTroubleshooting steps:\n")
-					fmt.Printf("  - Verify the parameter is being sent: check server logs or use a network proxy\n")
-					fmt.Printf("  - Try with actual query vectors that have ground truth data\n")
-					fmt.Printf("  - Check if recall is in result metadata or a different field\n")
-					fmt.Printf("  - Contact Zilliz support if the feature should work but doesn't\n")
-					fmt.Printf("==========================================\n\n")
-				}
-			}
-		} else {
-			if queryNum == 1 {
-				fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
-				fmt.Printf("result.Fields is nil or empty!\n")
-				fmt.Printf("This suggests recall is not being returned in Fields.\n")
-				fmt.Printf("Recall might be:\n")
-				fmt.Printf("  - In result metadata (check result struct fields)\n")
-				fmt.Printf("  - Not calculated due to missing ground truth (random vectors)\n")
-				fmt.Printf("  - Not supported by the Go SDK version\n")
-				fmt.Printf("==========================================\n\n")
-			}
-		}
-
-		// Also check if recall might be in the SearchResult structure itself (not in Fields)
-		// Some SDKs might return it as a separate field
-		if queryNum == 1 && recall == 0.0 {
-			fmt.Printf("\n=== DEBUG: Checking SearchResult structure for recall ===\n")
-			fmt.Printf("SearchResult type: %T\n", result)
-			// Try to use reflection or check if there are any methods that might contain recall
-			// The SDK might have a GetRecall() method or similar
-			fmt.Printf("Note: If recall is calculated, it should appear above in the Fields extraction.\n")
-			fmt.Printf("If not found, the most likely cause is missing ground truth data.\n")
-			fmt.Printf("==========================================\n\n")
-		}
+	if len(searchResults) > 0 && queryNum%recallSampleRate == 0 {
+		recall = lt.estimateRecall(ctx, queryVector, searchResults[0])
 	}
 
 	return QueryResult{
 		Latency: latency,
 		Recall:  recall,
 	}
+}
+
+// estimateRecall estimates recall by comparing approximate results with high-recall results (level 10)
+func (lt *LoadTester) estimateRecall(ctx context.Context, queryVector []float32, approximateResult client.SearchResult) float64 {
+	// Do a high-recall search (level 10) to get ground truth
+	highRecallParams := &CustomSearchParam{
+		level: 10, // Highest recall level
+	}
+
+	highRecallResults, err := lt.client.Search(
+		ctx,
+		lt.collection,
+		[]string{},
+		"",
+		[]string{},
+		[]entity.Vector{entity.FloatVector(queryVector)},
+		"vector",
+		lt.metricType,
+		10, // topK
+		highRecallParams,
+	)
+
+	if err != nil || len(highRecallResults) == 0 {
+		return 0.0
+	}
+
+	highRecallResult := highRecallResults[0]
+
+	// Extract IDs from both results
+	approxIDs := extractIDs(approximateResult.IDs)
+	groundTruthIDs := extractIDs(highRecallResult.IDs)
+
+	if len(approxIDs) == 0 || len(groundTruthIDs) == 0 {
+		return 0.0
+	}
+
+	// Calculate intersection
+	intersection := 0
+	groundTruthSet := make(map[interface{}]bool)
+	for _, id := range groundTruthIDs {
+		groundTruthSet[id] = true
+	}
+
+	for _, id := range approxIDs {
+		if groundTruthSet[id] {
+			intersection++
+		}
+	}
+
+	// Recall = intersection / topK
+	topK := len(groundTruthIDs)
+	if topK == 0 {
+		return 0.0
+	}
+
+	return float64(intersection) / float64(topK)
+}
+
+// extractIDs extracts IDs from a column into a slice for comparison
+func extractIDs(idsColumn entity.Column) []interface{} {
+	if idsColumn == nil {
+		return nil
+	}
+
+	var ids []interface{}
+	switch col := idsColumn.(type) {
+	case *entity.ColumnInt64:
+		for i := 0; i < col.Len(); i++ {
+			if val, err := col.Get(i); err == nil {
+				ids = append(ids, val)
+			}
+		}
+	case *entity.ColumnString:
+		for i := 0; i < col.Len(); i++ {
+			if val, err := col.Get(i); err == nil {
+				ids = append(ids, val)
+			}
+		}
+	}
+	return ids
 }
 
 func generateRandomVector(dim int) []float32 {
