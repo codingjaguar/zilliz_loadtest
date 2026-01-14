@@ -253,7 +253,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		level:                   lt.level,
 		enableRecallCalculation: true,
 	}
-	
+
 	// Debug: Verify search parameters are being set correctly
 	if queryNum == 1 {
 		params := searchParams.Params()
@@ -267,17 +267,18 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Measure latency only for the search operation (not including vector generation)
 	// Use high-precision timing for accurate measurements
 	searchStart := time.Now()
-	
+
 	// Execute search
-	// When enable_recall_calculation is true, we need to explicitly request "recalls" as an output field
-	// According to Zilliz docs, recall is returned in the response when enable_recall_calculation is true
-	// We need to request it as an output field even though it's not a collection field
+	// When enable_recall_calculation is true, Zilliz should return recall automatically
+	// Try both with and without "recalls" in output fields - it may be returned automatically
+	// Note: Recall calculation requires ground truth data. Random query vectors won't have
+	// ground truth, so recall may always be 0 or not calculated.
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
-		[]string{},        // partition names (empty for all partitions)
-		"",                 // expr (empty for no filter)
-		[]string{"recalls"}, // output fields - must request "recalls" to get recall calculation results
+		[]string{}, // partition names (empty for all partitions)
+		"",         // expr (empty for no filter)
+		[]string{}, // output fields - try empty first, recall should be returned automatically
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -304,7 +305,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 	if len(searchResults) > 0 {
 		result := searchResults[0]
-		
+
 		// Debug: Print full search result structure
 		if queryNum == 1 {
 			fmt.Printf("\n=== DEBUG: Full Search Result Structure ===\n")
@@ -330,8 +331,31 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 			fmt.Printf("SearchResult type: %T\n", result)
 			fmt.Printf("==========================================\n\n")
 		}
-		
+
 		// Try to get recall from Fields
+		// First, try with "recalls" in output fields if Fields is empty or doesn't contain recall
+		if result.Fields == nil {
+			if queryNum == 1 {
+				fmt.Printf("\n=== DEBUG: Fields is nil, trying search with 'recalls' in output fields ===\n")
+			}
+			// Retry with "recalls" explicitly requested as output field
+			searchResultsWithRecalls, retryErr := lt.client.Search(
+				ctx,
+				lt.collection,
+				[]string{},
+				"",
+				[]string{"recalls"}, // Explicitly request recalls as output field
+				[]entity.Vector{entity.FloatVector(queryVector)},
+				"vector",
+				lt.metricType,
+				10,
+				searchParams,
+			)
+			if retryErr == nil && len(searchResultsWithRecalls) > 0 {
+				result = searchResultsWithRecalls[0]
+			}
+		}
+
 		if result.Fields != nil {
 			// Debug: List all available columns in Fields
 			if queryNum == 1 {
@@ -343,7 +367,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 				// For now, just try the known column names
 				fmt.Printf("Trying to get column 'recalls'...\n")
 			}
-			
+
 			// Try "recalls" first (as shown in Python docs)
 			recallColumn := result.Fields.GetColumn("recalls")
 			if recallColumn == nil {
@@ -362,7 +386,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 					fmt.Printf("Recall column name: %s\n", recallColumn.Name())
 					fmt.Printf("Recall column length: %d\n", recallColumn.Len())
 				}
-				
+
 				// The recall column is returned as ColumnDynamic (JSON field)
 				// Extract the first recall value (typically one per query, but may have one per result)
 				if dynamicColumn, ok := recallColumn.(*entity.ColumnDynamic); ok {
@@ -370,7 +394,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 						if queryNum == 1 {
 							fmt.Printf("ColumnDynamic found, length: %d\n", dynamicColumn.Len())
 						}
-						
+
 						// Try to get as double (float64) - this should work for numeric JSON values
 						if val, err := dynamicColumn.GetAsDouble(0); err == nil {
 							recall = val
@@ -381,7 +405,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							if queryNum == 1 {
 								fmt.Printf("GetAsDouble(0) error: %v\n", err)
 							}
-							
+
 							// Try GetAsString to see the raw JSON value
 							if strVal, err := dynamicColumn.GetAsString(0); err == nil {
 								if queryNum == 1 {
@@ -397,7 +421,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							} else if queryNum == 1 {
 								fmt.Printf("GetAsString(0) error: %v\n", err)
 							}
-							
+
 							// Fallback: try to get as interface{} and convert
 							if val, err := dynamicColumn.Get(0); err == nil {
 								if queryNum == 1 {
@@ -442,7 +466,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 									fmt.Printf("Get(0) error: %v\n", err)
 									// Try accessing underlying ColumnJSONBytes directly
 									fmt.Printf("Trying to access underlying ColumnJSONBytes...\n")
-									
+
 									// ColumnDynamic wraps ColumnJSONBytes - try to access the raw JSON
 									// Check if we can get the underlying JSON bytes
 									if jsonBytesCol, ok := recallColumn.(interface{ Data() [][]byte }); ok {
@@ -463,7 +487,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 											}
 										}
 									}
-									
+
 									// Try ValueByIdx which might work for JSONBytes - check all indices
 									if jsonBytesCol, ok := recallColumn.(interface{ ValueByIdx(int) ([]byte, error) }); ok {
 										// Try all indices to find where the recall data is
@@ -474,7 +498,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 												var jsonVal interface{}
 												if err := json.Unmarshal(bytes, &jsonVal); err == nil {
 													fmt.Printf("Parsed JSON[%d]: %v (type: %T)\n", idx, jsonVal, jsonVal)
-													
+
 													// Try to extract recall from JSON - check various structures
 													if recallMap, ok := jsonVal.(map[string]interface{}); ok {
 														// Check for various possible field names
@@ -522,7 +546,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 								}
 							}
 						}
-						
+
 						// Try getting multiple values to see the pattern
 						if queryNum == 1 && dynamicColumn.Len() > 1 {
 							fmt.Printf("Trying to get all recall values:\n")
@@ -577,15 +601,19 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 						fmt.Printf("Unknown recall column type: %T\n", recallColumn)
 					}
 				}
-				
+
 				if queryNum == 1 {
 					fmt.Printf("Final recall value: %f\n", recall)
 					if recall == 0.0 {
-						fmt.Printf("WARNING: Recall is 0.0 - this may indicate:\n")
-						fmt.Printf("  1. The enable_recall_calculation parameter isn't working as expected\n")
-						fmt.Printf("  2. Random query vectors don't have ground truth for recall calculation\n")
-						fmt.Printf("  3. The recall data is in a different format or location\n")
-						fmt.Printf("  4. The Go SDK may not fully support recall calculation yet\n")
+						fmt.Printf("\n⚠️  WARNING: Recall is 0.0 - Possible reasons:\n")
+						fmt.Printf("  1. ⚠️  CRITICAL: Random query vectors don't have ground truth!\n")
+						fmt.Printf("     Recall calculation requires comparing results against known ground truth.\n")
+						fmt.Printf("     With random vectors, Zilliz cannot calculate recall because there's no\n")
+						fmt.Printf("     reference to compare against. Use actual query vectors from your dataset.\n")
+						fmt.Printf("  2. The enable_recall_calculation parameter may not be working\n")
+						fmt.Printf("  3. The recall data may be in a different format or location\n")
+						fmt.Printf("  4. The Go SDK may not fully support recall calculation yet (feature is in Public Preview)\n")
+						fmt.Printf("  5. The parameter might need to be nested differently in the request\n")
 					}
 					fmt.Printf("==========================================\n\n")
 				}
@@ -594,16 +622,42 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
 					fmt.Printf("recallColumn is nil!\n")
 					fmt.Printf("The 'recalls' column was not found in the search results.\n")
-					fmt.Printf("This may indicate that enable_recall_calculation isn't working.\n")
+					fmt.Printf("\nPossible issues:\n")
+					fmt.Printf("  1. ⚠️  Random query vectors don't have ground truth - recall cannot be calculated\n")
+					fmt.Printf("  2. enable_recall_calculation parameter may not be working\n")
+					fmt.Printf("  3. Recall might be returned in a different location (not in Fields)\n")
+					fmt.Printf("  4. Go SDK may not fully support this feature (Public Preview)\n")
+					fmt.Printf("\nTroubleshooting steps:\n")
+					fmt.Printf("  - Verify the parameter is being sent: check server logs or use a network proxy\n")
+					fmt.Printf("  - Try with actual query vectors that have ground truth data\n")
+					fmt.Printf("  - Check if recall is in result metadata or a different field\n")
+					fmt.Printf("  - Contact Zilliz support if the feature should work but doesn't\n")
 					fmt.Printf("==========================================\n\n")
 				}
 			}
 		} else {
 			if queryNum == 1 {
 				fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
-				fmt.Printf("result.Fields is nil!\n")
+				fmt.Printf("result.Fields is nil or empty!\n")
+				fmt.Printf("This suggests recall is not being returned in Fields.\n")
+				fmt.Printf("Recall might be:\n")
+				fmt.Printf("  - In result metadata (check result struct fields)\n")
+				fmt.Printf("  - Not calculated due to missing ground truth (random vectors)\n")
+				fmt.Printf("  - Not supported by the Go SDK version\n")
 				fmt.Printf("==========================================\n\n")
 			}
+		}
+
+		// Also check if recall might be in the SearchResult structure itself (not in Fields)
+		// Some SDKs might return it as a separate field
+		if queryNum == 1 && recall == 0.0 {
+			fmt.Printf("\n=== DEBUG: Checking SearchResult structure for recall ===\n")
+			fmt.Printf("SearchResult type: %T\n", result)
+			// Try to use reflection or check if there are any methods that might contain recall
+			// The SDK might have a GetRecall() method or similar
+			fmt.Printf("Note: If recall is calculated, it should appear above in the Fields extraction.\n")
+			fmt.Printf("If not found, the most likely cause is missing ground truth data.\n")
+			fmt.Printf("==========================================\n\n")
 		}
 	}
 
@@ -710,7 +764,7 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 		for i := 0; i < currentBatchSize; i++ {
 			// Use batchStart + i as seed to ensure unique vectors
 			vectors[i] = generateSeedingVector(vectorDim, int64(batchStart+i))
-			
+
 			// Show progress every 5000 vectors during generation
 			if (i+1)%5000 == 0 {
 				progressPercent := float64(vectorsInserted+i+1) / float64(totalVectors) * 100
@@ -728,7 +782,7 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 		uploadProgressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
 		fmt.Printf("\r[Progress: %.1f%%] Uploading batch %d/%d...",
 			uploadProgressPercent, batchNum+1, totalBatches)
-		
+
 		_, err := milvusClient.Insert(ctx, collection, "", vectorColumn)
 		if err != nil {
 			return fmt.Errorf("failed to insert batch %d: %w", batchNum+1, err)
@@ -738,15 +792,15 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 		uploadTime := time.Since(batchStartTime)
 		totalBatchTime := time.Since(generateStart)
 		rate := float64(currentBatchSize) / totalBatchTime.Seconds()
-		
+
 		// Calculate estimated time remaining
 		elapsedTotal := time.Since(startTime)
 		avgRate := float64(vectorsInserted) / elapsedTotal.Seconds()
 		remainingVectors := totalVectors - vectorsInserted
 		estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
-		
+
 		progressPercent = float64(vectorsInserted) / float64(totalVectors) * 100
-		
+
 		// Print detailed progress after each batch
 		fmt.Printf("\r[Progress: %.1f%%] Batch %d/%d: Inserted %d vectors (Generate: %v, Upload: %v, Total: %v, %.0f vec/s) [ETA: %v]\n",
 			progressPercent, batchNum+1, totalBatches, currentBatchSize,
