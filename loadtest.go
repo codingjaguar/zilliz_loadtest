@@ -223,7 +223,12 @@ type CustomSearchParam struct {
 func (c *CustomSearchParam) Params() map[string]interface{} {
 	params := make(map[string]interface{})
 	params["level"] = c.level
-	params["enable_recall_calculation"] = c.enableRecallCalculation
+	// Try both boolean and string "true" to see which format works
+	if c.enableRecallCalculation {
+		params["enable_recall_calculation"] = true
+		// Also try as string in case the server expects it
+		// params["enable_recall_calculation"] = "true"
+	}
 	return params
 }
 
@@ -247,6 +252,16 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	searchParams := &CustomSearchParam{
 		level:                   lt.level,
 		enableRecallCalculation: true,
+	}
+	
+	// Debug: Verify search parameters are being set correctly
+	if queryNum == 1 {
+		params := searchParams.Params()
+		fmt.Printf("\n=== DEBUG: Search Parameters ===\n")
+		fmt.Printf("Params map: %+v\n", params)
+		fmt.Printf("Level: %d\n", params["level"])
+		fmt.Printf("enable_recall_calculation: %v\n", params["enable_recall_calculation"])
+		fmt.Printf("================================\n\n")
 	}
 
 	// Measure latency only for the search operation (not including vector generation)
@@ -565,14 +580,29 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 				
 				if queryNum == 1 {
 					fmt.Printf("Final recall value: %f\n", recall)
+					if recall == 0.0 {
+						fmt.Printf("WARNING: Recall is 0.0 - this may indicate:\n")
+						fmt.Printf("  1. The enable_recall_calculation parameter isn't working as expected\n")
+						fmt.Printf("  2. Random query vectors don't have ground truth for recall calculation\n")
+						fmt.Printf("  3. The recall data is in a different format or location\n")
+						fmt.Printf("  4. The Go SDK may not fully support recall calculation yet\n")
+					}
 					fmt.Printf("==========================================\n\n")
 				}
 			} else {
 				if queryNum == 1 {
 					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
 					fmt.Printf("recallColumn is nil!\n")
+					fmt.Printf("The 'recalls' column was not found in the search results.\n")
+					fmt.Printf("This may indicate that enable_recall_calculation isn't working.\n")
 					fmt.Printf("==========================================\n\n")
 				}
+			}
+		} else {
+			if queryNum == 1 {
+				fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
+				fmt.Printf("result.Fields is nil!\n")
+				fmt.Printf("==========================================\n\n")
 			}
 		}
 	}
