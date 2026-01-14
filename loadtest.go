@@ -297,39 +297,101 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 			}
 
 			if recallColumn != nil {
+				// Debug: Print recall column details for first query
+				if queryNum == 1 {
+					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
+					fmt.Printf("Recall column type: %T\n", recallColumn)
+					fmt.Printf("Recall column name: %s\n", recallColumn.Name())
+					fmt.Printf("Recall column length: %d\n", recallColumn.Len())
+				}
+				
 				// The recall column is returned as ColumnDynamic (JSON field)
 				// Extract the first recall value (typically one per query, but may have one per result)
 				if dynamicColumn, ok := recallColumn.(*entity.ColumnDynamic); ok {
 					if dynamicColumn.Len() > 0 {
+						if queryNum == 1 {
+							fmt.Printf("ColumnDynamic found, length: %d\n", dynamicColumn.Len())
+						}
+						
 						// Try to get as double (float64)
 						if val, err := dynamicColumn.GetAsDouble(0); err == nil {
 							recall = val
+							if queryNum == 1 {
+								fmt.Printf("Got recall via GetAsDouble(0): %f\n", recall)
+							}
 						} else {
+							if queryNum == 1 {
+								fmt.Printf("GetAsDouble(0) error: %v\n", err)
+							}
+							
 							// Fallback: try to get as interface{} and convert
 							if val, err := dynamicColumn.Get(0); err == nil {
+								if queryNum == 1 {
+									fmt.Printf("Got value via Get(0): %v (type: %T)\n", val, val)
+								}
 								switch v := val.(type) {
 								case float64:
 									recall = v
+									if queryNum == 1 {
+										fmt.Printf("Extracted as float64: %f\n", recall)
+									}
 								case float32:
 									recall = float64(v)
+									if queryNum == 1 {
+										fmt.Printf("Extracted as float32->float64: %f\n", recall)
+									}
 								case int64:
 									recall = float64(v) / 100.0 // Convert from percentage
+									if queryNum == 1 {
+										fmt.Printf("Extracted as int64 (percentage): %f\n", recall)
+									}
 								case int:
 									recall = float64(v) / 100.0 // Convert from percentage
+									if queryNum == 1 {
+										fmt.Printf("Extracted as int (percentage): %f\n", recall)
+									}
+								default:
+									if queryNum == 1 {
+										fmt.Printf("Unknown type for recall value: %T, value: %v\n", v, v)
+									}
+								}
+							} else {
+								if queryNum == 1 {
+									fmt.Printf("Get(0) error: %v\n", err)
 								}
 							}
+						}
+						
+						// Try getting multiple values to see the pattern
+						if queryNum == 1 && dynamicColumn.Len() > 1 {
+							fmt.Printf("Trying to get all recall values:\n")
+							for i := 0; i < dynamicColumn.Len() && i < 3; i++ {
+								if val, err := dynamicColumn.Get(i); err == nil {
+									fmt.Printf("  recalls[%d]: %v (type: %T)\n", i, val, val)
+								}
+							}
+						}
+					} else {
+						if queryNum == 1 {
+							fmt.Printf("ColumnDynamic length is 0\n")
 						}
 					}
 				} else if floatColumn, ok := recallColumn.(*entity.ColumnFloat); ok {
 					if floatColumn.Len() > 0 {
 						if val, err := floatColumn.ValueByIdx(0); err == nil {
 							recall = float64(val)
+							if queryNum == 1 {
+								fmt.Printf("Got recall from ColumnFloat: %f\n", recall)
+							}
 						}
 					}
 				} else if doubleColumn, ok := recallColumn.(*entity.ColumnDouble); ok {
 					if doubleColumn.Len() > 0 {
 						if val, err := doubleColumn.GetAsDouble(0); err == nil {
 							recall = val
+							if queryNum == 1 {
+								fmt.Printf("Got recall from ColumnDouble: %f\n", recall)
+							}
 						}
 					}
 				} else if int64Column, ok := recallColumn.(*entity.ColumnInt64); ok {
@@ -338,9 +400,27 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 						if val, err := int64Column.Get(0); err == nil {
 							if intVal, ok := val.(int64); ok {
 								recall = float64(intVal) / 100.0 // Convert from percentage
+								if queryNum == 1 {
+									fmt.Printf("Got recall from ColumnInt64: %f\n", recall)
+								}
 							}
 						}
 					}
+				} else {
+					if queryNum == 1 {
+						fmt.Printf("Unknown recall column type: %T\n", recallColumn)
+					}
+				}
+				
+				if queryNum == 1 {
+					fmt.Printf("Final recall value: %f\n", recall)
+					fmt.Printf("==========================================\n\n")
+				}
+			} else {
+				if queryNum == 1 {
+					fmt.Printf("\n=== DEBUG: Recall Extraction (Query #1) ===\n")
+					fmt.Printf("recallColumn is nil!\n")
+					fmt.Printf("==========================================\n\n")
 				}
 			}
 		}
