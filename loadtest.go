@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -313,7 +314,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							fmt.Printf("ColumnDynamic found, length: %d\n", dynamicColumn.Len())
 						}
 						
-						// Try to get as double (float64)
+						// Try to get as double (float64) - this should work for numeric JSON values
 						if val, err := dynamicColumn.GetAsDouble(0); err == nil {
 							recall = val
 							if queryNum == 1 {
@@ -322,6 +323,22 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 						} else {
 							if queryNum == 1 {
 								fmt.Printf("GetAsDouble(0) error: %v\n", err)
+							}
+							
+							// Try GetAsString to see the raw JSON value
+							if strVal, err := dynamicColumn.GetAsString(0); err == nil {
+								if queryNum == 1 {
+									fmt.Printf("Got value as string: %s\n", strVal)
+								}
+								// Try to parse as float
+								if parsedVal, err := strconv.ParseFloat(strVal, 64); err == nil {
+									recall = parsedVal
+									if queryNum == 1 {
+										fmt.Printf("Parsed string to float64: %f\n", recall)
+									}
+								}
+							} else if queryNum == 1 {
+								fmt.Printf("GetAsString(0) error: %v\n", err)
 							}
 							
 							// Fallback: try to get as interface{} and convert
@@ -350,6 +367,14 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 									if queryNum == 1 {
 										fmt.Printf("Extracted as int (percentage): %f\n", recall)
 									}
+								case string:
+									// Try to parse string as float
+									if parsedVal, err := strconv.ParseFloat(v, 64); err == nil {
+										recall = parsedVal
+										if queryNum == 1 {
+											fmt.Printf("Parsed string to float64: %f\n", recall)
+										}
+									}
 								default:
 									if queryNum == 1 {
 										fmt.Printf("Unknown type for recall value: %T, value: %v\n", v, v)
@@ -358,6 +383,8 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							} else {
 								if queryNum == 1 {
 									fmt.Printf("Get(0) error: %v\n", err)
+									// Try accessing underlying JSON bytes
+									fmt.Printf("Trying to access underlying ColumnJSONBytes...\n")
 								}
 							}
 						}
@@ -368,6 +395,11 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 							for i := 0; i < dynamicColumn.Len() && i < 3; i++ {
 								if val, err := dynamicColumn.Get(i); err == nil {
 									fmt.Printf("  recalls[%d]: %v (type: %T)\n", i, val, val)
+								} else {
+									fmt.Printf("  recalls[%d]: error - %v\n", i, err)
+								}
+								if strVal, err := dynamicColumn.GetAsString(i); err == nil {
+									fmt.Printf("  recalls[%d] as string: %s\n", i, strVal)
 								}
 							}
 						}
