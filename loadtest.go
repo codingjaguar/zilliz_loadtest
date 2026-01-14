@@ -258,13 +258,13 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 	// Execute search with recall calculation enabled
 	// According to docs, recall should be returned in the response when enable_recall_calculation is true
-	// We need to explicitly request "recalls" as an output field to get the recall data
+	// Request "vector" and "id" as output fields to ensure both are returned
 	searchResults, err := lt.client.Search(
 		ctx,
 		lt.collection,
-		[]string{},                    // partition names (empty for all partitions)
-		"",                            // expr (empty for no filter)
-		[]string{"recalls", "vector"}, // output fields - request "recalls" and "vector" to verify Fields are populated
+		[]string{},               // partition names (empty for all partitions)
+		"",                       // expr (empty for no filter)
+		[]string{"vector", "id"}, // output fields - request "vector" and "id" to get both back
 		[]entity.Vector{entity.FloatVector(queryVector)},
 		"vector",      // vector field name
 		lt.metricType, // metric type
@@ -304,22 +304,66 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 		fmt.Printf("\n=== ENTIRE SEARCH RESULT STRUCTURE ===\n")
 		fmt.Printf("ResultCount: %d\n", result.ResultCount)
 		fmt.Printf("Scores: %v (len=%d)\n", result.Scores, len(result.Scores))
+
+		// Inspect IDs in detail
+		fmt.Printf("\n--- IDs ---\n")
 		fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
 		if result.IDs != nil {
-			fmt.Printf("IDs type: %T, len: %d\n", result.IDs, result.IDs.Len())
+			fmt.Printf("IDs type: %T\n", result.IDs)
+			fmt.Printf("IDs length: %d\n", result.IDs.Len())
+			if result.IDs.Len() > 0 {
+				// Try to extract and print actual ID values
+				switch idsCol := result.IDs.(type) {
+				case *entity.ColumnInt64:
+					fmt.Printf("IDs (Int64): %v\n", idsCol.Data())
+				case *entity.ColumnVarChar:
+					fmt.Printf("IDs (VarChar): %v\n", idsCol.Data())
+				default:
+					fmt.Printf("IDs type: %T, trying to get values...\n", idsCol)
+					for i := 0; i < idsCol.Len() && i < 5; i++ {
+						if val, err := idsCol.Get(i); err == nil {
+							fmt.Printf("  IDs[%d]: %v\n", i, val)
+						}
+					}
+				}
+			}
 		}
+
+		// Inspect Fields in detail
+		fmt.Printf("\n--- Fields ---\n")
 		fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
 		fmt.Printf("Fields length: %d\n", len(result.Fields))
-		fmt.Printf("Err: %v\n", result.Err)
-
-		// Try to marshal the entire result to JSON to see all fields
-		if jsonData, err := json.MarshalIndent(result, "", "  "); err == nil {
-			fmt.Printf("\n=== SearchResult as JSON ===\n")
-			fmt.Printf("%s\n", string(jsonData))
-		} else {
-			fmt.Printf("Could not marshal SearchResult: %v\n", err)
+		for i, field := range result.Fields {
+			fmt.Printf("\nFields[%d]:\n", i)
+			fmt.Printf("  Name: %s\n", field.Name())
+			fmt.Printf("  Type: %T\n", field)
+			fmt.Printf("  Length: %d\n", field.Len())
+			if field.Len() > 0 {
+				// Try to get actual values
+				switch col := field.(type) {
+				case *entity.ColumnFloatVector:
+					fmt.Printf("  ColumnFloatVector - Dim: %d\n", col.Dim())
+					if col.Len() > 0 {
+						data := col.Data()
+						fmt.Printf("  First vector: %v (showing first 10 dims)\n", data[0][:min(10, len(data[0]))])
+					}
+				case *entity.ColumnDynamic:
+					fmt.Printf("  ColumnDynamic (JSON field)\n")
+					if bytes, err := col.ValueByIdx(0); err == nil {
+						fmt.Printf("  First JSON value: %s\n", string(bytes))
+					}
+				default:
+					fmt.Printf("  Unknown column type, trying Get(0)...\n")
+					if val, err := field.Get(0); err == nil {
+						fmt.Printf("  First value: %v (type: %T)\n", val, val)
+					} else {
+						fmt.Printf("  Error getting value: %v\n", err)
+					}
+				}
+			}
 		}
-		fmt.Printf("=====================================\n\n")
+
+		fmt.Printf("\n=====================================\n\n")
 	}
 
 	// According to Zilliz docs, recall should be in the Fields when we request "recalls" as output field
@@ -665,6 +709,14 @@ func (lt *LoadTester) dumpRawResponse(ctx context.Context, queryVector []float32
 		}
 	}
 	fmt.Printf("==========================================\n\n")
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // extractIDs extracts IDs from a column into a slice for comparison
