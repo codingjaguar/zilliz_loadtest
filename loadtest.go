@@ -5,15 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"reflect"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
@@ -30,14 +25,12 @@ type TestResult struct {
 	QPS          int
 	P95Latency   float64 // in milliseconds
 	P99Latency   float64 // in milliseconds
-	AvgRecall    float64
 	TotalQueries int
 	Errors       int
 }
 
 type QueryResult struct {
 	Latency time.Duration
-	Recall  float64
 	Error   error
 }
 
@@ -175,34 +168,29 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	// Collect results
 	var latencies []float64
-	var recalls []float64
 	errors := 0
+	firstError := error(nil)
 
 	for result := range resultsChan {
 		if result.Error != nil {
 			errors++
+			if firstError == nil {
+				firstError = result.Error
+			}
 			continue
 		}
 		latencies = append(latencies, float64(result.Latency.Milliseconds()))
-		if result.Recall > 0 {
-			recalls = append(recalls, result.Recall)
-		}
+	}
+
+	// Print first error if all queries failed
+	if len(latencies) == 0 && firstError != nil {
+		fmt.Printf("ERROR: All queries failed. First error: %v\n", firstError)
 	}
 
 	// Calculate percentiles
 	sort.Float64s(latencies)
 	p95 := calculatePercentile(latencies, 95)
 	p99 := calculatePercentile(latencies, 99)
-
-	// Calculate average recall
-	avgRecall := 0.0
-	if len(recalls) > 0 {
-		sum := 0.0
-		for _, r := range recalls {
-			sum += r
-		}
-		avgRecall = sum / float64(len(recalls))
-	}
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
 	fmt.Printf("Completed: %d queries in %v (actual QPS: %.2f, errors: %d)\n",
@@ -212,93 +200,19 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		QPS:          targetQPS,
 		P95Latency:   p95,
 		P99Latency:   p99,
-		AvgRecall:    avgRecall,
 		TotalQueries: len(latencies),
 		Errors:       errors,
 	}, nil
 }
 
-// SearchOption represents search options in a builder pattern (similar to NewSearchOption from docs)
-type SearchOption struct {
-	collectionName   string
-	limit            int
-	vectors          []entity.Vector
-	annsField        string
-	outputFields     []string
-	consistencyLevel entity.ConsistencyLevel
-	searchParams     map[string]string
-	expr             string
-	partitions       []string
-}
-
-// NewSearchOption creates a new SearchOption with required parameters
-func NewSearchOption(collectionName string, limit int, vectors []entity.Vector) *SearchOption {
-	return &SearchOption{
-		collectionName:   collectionName,
-		limit:            limit,
-		vectors:          vectors,
-		annsField:        "vector", // default
-		outputFields:     []string{},
-		consistencyLevel: entity.ClBounded, // default
-		searchParams:     make(map[string]string),
-		expr:             "",
-		partitions:       []string{},
-	}
-}
-
-// WithANNSField sets the ANN search field name
-func (so *SearchOption) WithANNSField(fieldName string) *SearchOption {
-	so.annsField = fieldName
-	return so
-}
-
-// WithOutputFields sets the output fields to return
-func (so *SearchOption) WithOutputFields(fields ...string) *SearchOption {
-	so.outputFields = fields
-	return so
-}
-
-// WithConsistencyLevel sets the consistency level
-func (so *SearchOption) WithConsistencyLevel(cl entity.ConsistencyLevel) *SearchOption {
-	so.consistencyLevel = cl
-	return so
-}
-
-// WithSearchParam adds a search parameter
-func (so *SearchOption) WithSearchParam(key, value string) *SearchOption {
-	so.searchParams[key] = value
-	return so
-}
-
-// WithExpr sets the filter expression
-func (so *SearchOption) WithExpr(expr string) *SearchOption {
-	so.expr = expr
-	return so
-}
-
-// WithPartitions sets the partition names
-func (so *SearchOption) WithPartitions(partitions ...string) *SearchOption {
-	so.partitions = partitions
-	return so
-}
-
-// CustomSearchParam implements SearchParam interface with level and enable_recall_calculation
+// CustomSearchParam implements SearchParam interface with level
 type CustomSearchParam struct {
-	level                   int
-	enableRecallCalculation bool
-	searchParams            map[string]string
+	level int
 }
 
 func (c *CustomSearchParam) Params() map[string]interface{} {
 	params := make(map[string]interface{})
 	params["level"] = c.level
-	if c.enableRecallCalculation {
-		params["enable_recall_calculation"] = true
-	}
-	// Add any additional search params
-	for k, v := range c.searchParams {
-		params[k] = v
-	}
 	return params
 }
 
@@ -314,480 +228,78 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
 
+	// Create search parameters with level
+	searchParams := &CustomSearchParam{
+		level: lt.level,
+	}
+
+	// Log the search payload for the first query
+	if queryNum == 1 {
+		lt.logSearchPayload(queryVector, searchParams)
+	}
+
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Use the NewSearchOption pattern similar to the docs
-	searchOption := NewSearchOption(
-		lt.collection, // collectionName
-		10,            // limit (topK)
-		[]entity.Vector{entity.FloatVector(queryVector)},
-	).
-		WithConsistencyLevel(entity.ClStrong).
-		WithANNSField("vector").
-		WithSearchParam("enable_recall_calculation", "true").
-		WithSearchParam("level", strconv.Itoa(lt.level)).
-		WithOutputFields("vector", "id")
-
-	// Convert SearchOption to search parameters
-	searchParams := &CustomSearchParam{
-		level:                   lt.level,
-		enableRecallCalculation: true,
-		searchParams:            searchOption.searchParams,
-	}
-
-	// Execute search using the SDK's Search method
-	searchResults, err := lt.client.Search(
+	// Execute search
+	_, err := lt.client.Search(
 		ctx,
-		searchOption.collectionName,
-		searchOption.partitions,
-		searchOption.expr,
-		searchOption.outputFields,
-		searchOption.vectors,
-		searchOption.annsField,
-		lt.metricType,
-		searchOption.limit,
+		lt.collection,
+		[]string{}, // partition names (empty for all partitions)
+		"",         // expr (empty for no filter)
+		[]string{}, // output fields - empty since we don't need any fields
+		[]entity.Vector{entity.FloatVector(queryVector)},
+		"vector",      // vector field name
+		lt.metricType, // metric type
+		10,            // topK
 		searchParams,
-		client.WithSearchQueryConsistencyLevel(searchOption.consistencyLevel),
 	)
 
 	latency := time.Since(searchStart)
 
 	if err != nil {
+		// Print error for first few queries to help debug
+		if queryNum <= 3 {
+			fmt.Printf("Query %d failed: %v\n", queryNum, err)
+		}
 		return QueryResult{
 			Latency: latency,
 			Error:   err,
 		}
 	}
 
-	// Extract recall from search results
-	// According to the docs, recall should be available in the response
-	recall := lt.extractRecallFromResults(searchResults, queryNum)
-
 	return QueryResult{
 		Latency: latency,
-		Recall:  recall,
 	}
 }
 
-// extractRecallFromResults extracts recall from search results when enable_recall_calculation is enabled
-func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResult, queryNum int) float64 {
-	if len(searchResults) == 0 {
-		return 0.0
-	}
+// logSearchPayload logs the search request payload before sending it
+func (lt *LoadTester) logSearchPayload(queryVector []float32, searchParams *CustomSearchParam) {
+	fmt.Printf("\n=== SEARCH REQUEST PAYLOAD (Query 1) ===\n")
 
-	result := searchResults[0]
-
-	// Dump entire search result structure for first query
-	if queryNum == 1 {
-		fmt.Printf("\n=== ENTIRE SEARCH RESULT STRUCTURE ===\n")
-		fmt.Printf("ResultCount: %d\n", result.ResultCount)
-		fmt.Printf("Scores: %v (len=%d)\n", result.Scores, len(result.Scores))
-
-		// Inspect IDs in detail
-		fmt.Printf("\n--- IDs ---\n")
-		fmt.Printf("IDs is nil: %v\n", result.IDs == nil)
-		if result.IDs != nil {
-			fmt.Printf("IDs type: %T\n", result.IDs)
-			fmt.Printf("IDs length: %d\n", result.IDs.Len())
-			if result.IDs.Len() > 0 {
-				// Try to extract and print actual ID values
-				switch idsCol := result.IDs.(type) {
-				case *entity.ColumnInt64:
-					fmt.Printf("IDs (Int64): %v\n", idsCol.Data())
-				case *entity.ColumnVarChar:
-					fmt.Printf("IDs (VarChar): %v\n", idsCol.Data())
-				default:
-					fmt.Printf("IDs type: %T, trying to get values...\n", idsCol)
-					for i := 0; i < idsCol.Len() && i < 5; i++ {
-						if val, err := idsCol.Get(i); err == nil {
-							fmt.Printf("  IDs[%d]: %v\n", i, val)
-						}
-					}
-				}
-			}
-		}
-
-		// Inspect Fields in detail
-		fmt.Printf("\n--- Fields ---\n")
-		fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
-		fmt.Printf("Fields length: %d\n", len(result.Fields))
-		for i, field := range result.Fields {
-			fmt.Printf("\nFields[%d]:\n", i)
-			fmt.Printf("  Name: %s\n", field.Name())
-			fmt.Printf("  Type: %T\n", field)
-			fmt.Printf("  Length: %d\n", field.Len())
-			if field.Len() > 0 {
-				// Try to get actual values
-				switch col := field.(type) {
-				case *entity.ColumnFloatVector:
-					fmt.Printf("  ColumnFloatVector - Dim: %d\n", col.Dim())
-					if col.Len() > 0 {
-						data := col.Data()
-						fmt.Printf("  First vector: %v (showing first 10 dims)\n", data[0][:min(10, len(data[0]))])
-					}
-				case *entity.ColumnDynamic:
-					fmt.Printf("  ColumnDynamic (JSON field)\n")
-					if bytes, err := col.ValueByIdx(0); err == nil {
-						fmt.Printf("  First JSON value: %s\n", string(bytes))
-					}
-				default:
-					fmt.Printf("  Unknown column type, trying Get(0)...\n")
-					if val, err := field.Get(0); err == nil {
-						fmt.Printf("  First value: %v (type: %T)\n", val, val)
-					} else {
-						fmt.Printf("  Error getting value: %v\n", err)
-					}
-				}
-			}
-		}
-
-		fmt.Printf("\n=====================================\n\n")
-	}
-
-	// According to Zilliz docs, recall should be in the Fields when we request "recalls" as output field
-	if len(result.Fields) == 0 {
-		if queryNum == 1 {
-			fmt.Printf("\n=== DEBUG: Fields is nil or empty ===\n")
-			fmt.Printf("This might mean the SDK isn't returning fields even though we requested 'recalls'\n")
-			fmt.Printf("========================================\n\n")
-		}
-		return 0.0
-	}
-
-	// Debug: Print all field names for first query
-	if queryNum == 1 {
-		fmt.Printf("\n=== Available Fields in Search Result ===\n")
-		for i, field := range result.Fields {
-			fmt.Printf("  Fields[%d]: name=%s, type=%T, len=%d\n", i, field.Name(), field, field.Len())
-		}
-		fmt.Printf("========================================\n\n")
-	}
-
-	// Check for "recalls" or "recall" field
-	for _, field := range result.Fields {
-		fieldName := field.Name()
-		if fieldName == "recalls" || fieldName == "recall" {
-			// Try to extract the recall value
-			if field.Len() > 0 {
-				// ColumnDynamic needs special handling - it's a JSON field
-				if dynamicCol, ok := field.(*entity.ColumnDynamic); ok {
-					// Dump ALL JSON values in the recalls column to see the full structure
-					if queryNum == 1 {
-						fmt.Printf("\n=== Dumping ALL JSON values in recalls column ===\n")
-						fmt.Printf("Column length: %d\n", dynamicCol.Len())
-						for i := 0; i < dynamicCol.Len() && i < 10; i++ {
-							if bytes, err := dynamicCol.ValueByIdx(i); err == nil {
-								fmt.Printf("recalls[%d] raw JSON: %s\n", i, string(bytes))
-								// Try to pretty print if it's valid JSON
-								var jsonData interface{}
-								if err := json.Unmarshal(bytes, &jsonData); err == nil {
-									if prettyJSON, err := json.MarshalIndent(jsonData, "  ", "  "); err == nil {
-										fmt.Printf("recalls[%d] formatted JSON:\n%s\n", i, string(prettyJSON))
-									}
-								}
-							} else {
-								fmt.Printf("recalls[%d] error: %v\n", i, err)
-							}
-						}
-						fmt.Printf("==================================================\n\n")
-					}
-
-					// Try to get the value using the standard methods
-					// ColumnDynamic looks for a field named "recalls" in the JSON
-					// But the JSON might be structured differently
-					if bytes, err := dynamicCol.ValueByIdx(0); err == nil {
-						// The JSON might not have "recalls" as a field name - it might be the value directly
-						// or it might be structured differently. Let's try to parse it directly.
-						// If the JSON is just a number, parse it directly
-						if parsed, err := strconv.ParseFloat(string(bytes), 64); err == nil {
-							if queryNum == 1 {
-								fmt.Printf("Recall is a direct number in JSON: %f\n", parsed)
-							}
-							return parsed
-						}
-
-						// Try to parse as JSON and look for common field names
-						var jsonData interface{}
-						if err := json.Unmarshal(bytes, &jsonData); err == nil {
-							// If it's a map, look for recall-related keys
-							if jsonMap, ok := jsonData.(map[string]interface{}); ok {
-								for key, val := range jsonMap {
-									if queryNum == 1 {
-										fmt.Printf("  JSON key '%s': %v (type: %T)\n", key, val, val)
-									}
-									// Try to extract numeric values
-									if floatVal, ok := val.(float64); ok {
-										return floatVal
-									}
-								}
-							} else if floatVal, ok := jsonData.(float64); ok {
-								// JSON is just a number
-								return floatVal
-							}
-						}
-					} else if queryNum == 1 {
-						fmt.Printf("Error getting raw JSON: %v\n", err)
-					}
-
-					// Try GetAsDouble first (most common for numeric JSON values)
-					if val, err := dynamicCol.GetAsDouble(0); err == nil {
-						if queryNum == 1 {
-							fmt.Printf("Found recall field '%s', value: %f (via GetAsDouble)\n", fieldName, val)
-						}
-						return val
-					} else if queryNum == 1 {
-						fmt.Printf("GetAsDouble(0) error: %v\n", err)
-					}
-
-					// Try GetAsString and parse
-					if strVal, err := dynamicCol.GetAsString(0); err == nil {
-						if parsed, err := strconv.ParseFloat(strVal, 64); err == nil {
-							if queryNum == 1 {
-								fmt.Printf("Found recall field '%s', value: %f (via GetAsString->ParseFloat)\n", fieldName, parsed)
-							}
-							return parsed
-						}
-						if queryNum == 1 {
-							fmt.Printf("Recall field '%s' string value: %s (could not parse)\n", fieldName, strVal)
-						}
-					} else if queryNum == 1 {
-						fmt.Printf("GetAsString(0) error: %v\n", err)
-					}
-
-					// Try Get() - this returns the raw JSON string, not the parsed value
-					if val, err := dynamicCol.Get(0); err == nil {
-						if queryNum == 1 {
-							fmt.Printf("Found recall field '%s', raw value: %v (type: %T)\n", fieldName, val, val)
-						}
-						// Get() returns the raw JSON string, so we need to parse it
-						if strVal, ok := val.(string); ok {
-							// The string might be the JSON value itself, try to parse it
-							if parsed, err := strconv.ParseFloat(strVal, 64); err == nil {
-								return parsed
-							}
-							// Or it might be JSON that needs unmarshaling
-							if queryNum == 1 {
-								fmt.Printf("Raw JSON string: %s\n", strVal)
-							}
-						}
-					} else if queryNum == 1 {
-						fmt.Printf("Get(0) error: %v\n", err)
-					}
-				} else {
-					// Not a ColumnDynamic, try regular Get()
-					if val, err := field.Get(0); err == nil {
-						if queryNum == 1 {
-							fmt.Printf("Found recall field '%s', value: %v (type: %T)\n", fieldName, val, val)
-						}
-						// Try to convert to float64
-						switch v := val.(type) {
-						case float64:
-							return v
-						case float32:
-							return float64(v)
-						case int:
-							return float64(v) / 100.0
-						case int64:
-							return float64(v) / 100.0
-						case string:
-							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
-								return parsed
-							}
-						}
-					} else if queryNum == 1 {
-						fmt.Printf("Error getting value from recall field: %v\n", err)
-					}
-				}
-			} else if queryNum == 1 {
-				fmt.Printf("Recall field '%s' has length 0\n", fieldName)
-			}
-		}
-	}
-
-	if queryNum == 1 {
-		fmt.Printf("Recall field not found. Available fields: ")
-		for i, field := range result.Fields {
-			if i > 0 {
-				fmt.Printf(", ")
-			}
-			fmt.Printf("%s", field.Name())
-		}
-		fmt.Printf("\n")
-	}
-
-	return 0.0
-}
-
-// dumpRawResponse dumps the entire raw gRPC protobuf response
-func (lt *LoadTester) dumpRawResponse(ctx context.Context, queryVector []float32, searchParams *CustomSearchParam) {
-	fmt.Printf("\n=== DUMPING RAW gRPC RESPONSE ===\n")
-
-	// Try to access the underlying GrpcClient to call gRPC directly
-	clientValue := reflect.ValueOf(lt.client)
-	if clientValue.Kind() == reflect.Ptr {
-		clientValue = clientValue.Elem()
-	}
-
-	// Get the Service field (milvuspb.MilvusServiceClient)
-	serviceField := clientValue.FieldByName("Service")
-	if !serviceField.IsValid() || serviceField.IsNil() {
-		fmt.Printf("Cannot access Service field - client may not be GrpcClient\n")
-		fmt.Printf("Client type: %T\n", lt.client)
-		return
-	}
-
-	// We need to prepare the search request
-	// Let's use reflection to call prepareSearchRequest or recreate it
-	// For now, let's try to call the service directly with a manually constructed request
-
-	// Prepare search request manually (similar to prepareSearchRequest in SDK)
+	// Build the params that will be sent
 	params := searchParams.Params()
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := json.MarshalIndent(params, "", "  ")
 	if err != nil {
 		fmt.Printf("Error marshaling params: %v\n", err)
 		return
 	}
 
-	searchParamsKV := entity.MapKvPairs(map[string]string{
-		"anns_field":    "vector",
-		"topk":          "10",
-		"params":        string(paramsJSON),
-		"metric_type":   string(lt.metricType),
-		"round_decimal": "-1",
-	})
-
-	// Convert vector to placeholder group bytes using the vector's Serialize method
-	floatVec := entity.FloatVector(queryVector)
-	placeholderValue := &commonpb.PlaceholderValue{
-		Tag:    "$0",
-		Type:   commonpb.PlaceholderType_FloatVector,
-		Values: [][]byte{floatVec.Serialize()},
-	}
-
-	placeholderGroup := &commonpb.PlaceholderGroup{
-		Placeholders: []*commonpb.PlaceholderValue{placeholderValue},
-	}
-
-	// Use proto.Marshal like the SDK does
-	placeholderGroupBytes, err := proto.Marshal(placeholderGroup)
-	if err != nil {
-		fmt.Printf("Error marshaling placeholder group: %v\n", err)
-		return
-	}
-
-	req := &milvuspb.SearchRequest{
-		CollectionName:   lt.collection,
-		PartitionNames:   []string{},
-		Dsl:              "",
-		PlaceholderGroup: placeholderGroupBytes,
-		DslType:          commonpb.DslType_BoolExprV1,
-		OutputFields:     []string{"recalls", "vector"},
-		SearchParams:     searchParamsKV,
-		Nq:               1,
-	}
-
-	// Try to call the service directly
-	service := serviceField.Interface()
-	searchMethod := reflect.ValueOf(service).MethodByName("Search")
-	if !searchMethod.IsValid() {
-		fmt.Printf("Search method not found on service\n")
-		return
-	}
-
-	// Call Search(ctx, req)
-	results := searchMethod.Call([]reflect.Value{
-		reflect.ValueOf(ctx),
-		reflect.ValueOf(req),
-	})
-
-	if len(results) != 2 {
-		fmt.Printf("Unexpected return values from Search\n")
-		return
-	}
-
-	// Check for error
-	if !results[1].IsNil() {
-		err := results[1].Interface().(error)
-		fmt.Printf("Error calling Search: %v\n", err)
-		return
-	}
-
-	// Get the response - use reflection to get the actual type
-	respValue := results[0]
-	resp := respValue.Interface()
-
-	fmt.Printf("Response type: %T\n", resp)
-
-	// Use reflection to dump the entire response structure
-	fmt.Printf("\n=== RAW gRPC Response Structure ===\n")
-	fmt.Printf("Response type: %T\n", resp)
-
-	respVal := reflect.ValueOf(resp)
-	if respVal.Kind() == reflect.Ptr {
-		respVal = respVal.Elem()
-	}
-
-	if respVal.IsValid() {
-		respType := respVal.Type()
-		fmt.Printf("Response type (after Elem): %s\n", respType)
-		fmt.Printf("Number of fields: %d\n", respType.NumField())
-
-		// Print all fields
-		for i := 0; i < respType.NumField(); i++ {
-			field := respType.Field(i)
-			fieldVal := respVal.Field(i)
-
-			if fieldVal.CanInterface() {
-				fieldInterface := fieldVal.Interface()
-				fmt.Printf("\nField[%d]: %s (type: %s)\n", i, field.Name, fieldVal.Type())
-
-				// Try to get more details based on type
-				switch fieldVal.Kind() {
-				case reflect.Slice:
-					fmt.Printf("  Slice length: %d\n", fieldVal.Len())
-					if fieldVal.Len() > 0 && fieldVal.Len() <= 5 {
-						for j := 0; j < fieldVal.Len(); j++ {
-							elem := fieldVal.Index(j)
-							if elem.CanInterface() {
-								fmt.Printf("  [%d]: %v\n", j, elem.Interface())
-							}
-						}
-					}
-				case reflect.Map:
-					fmt.Printf("  Map with %d keys\n", fieldVal.Len())
-					if fieldVal.Len() > 0 && fieldVal.Len() <= 10 {
-						for _, key := range fieldVal.MapKeys() {
-							val := fieldVal.MapIndex(key)
-							if val.CanInterface() {
-								fmt.Printf("  [%v]: %v\n", key.Interface(), val.Interface())
-							}
-						}
-					}
-				case reflect.Ptr:
-					if !fieldVal.IsNil() {
-						elem := fieldVal.Elem()
-						if elem.CanInterface() {
-							fmt.Printf("  Value: %v\n", elem.Interface())
-						}
-					} else {
-						fmt.Printf("  Value: <nil>\n")
-					}
-				default:
-					fmt.Printf("  Value: %v\n", fieldInterface)
-				}
-			} else {
-				fmt.Printf("Field[%d]: %s (type: %s) - cannot access value\n", i, field.Name, fieldVal.Type())
-			}
-		}
-
-		// Try to marshal the entire response as JSON (might work for some fields)
-		if jsonData, err := json.MarshalIndent(resp, "", "  "); err == nil {
-			fmt.Printf("\n=== Response as JSON (best effort) ===\n")
-			fmt.Printf("%s\n", string(jsonData))
-		}
-	}
-	fmt.Printf("==========================================\n\n")
+	fmt.Printf("Collection: %s\n", lt.collection)
+	fmt.Printf("Partitions: []\n")
+	fmt.Printf("Expr: \"\"\n")
+	fmt.Printf("OutputFields: [\"*\"]\n")
+	fmt.Printf("VectorField: \"vector\"\n")
+	fmt.Printf("MetricType: %s\n", lt.metricType)
+	fmt.Printf("TopK: 10\n")
+	fmt.Printf("SearchParams:\n")
+	fmt.Printf("  anns_field: \"vector\"\n")
+	fmt.Printf("  topk: \"10\"\n")
+	fmt.Printf("  params: %s\n", string(paramsJSON))
+	fmt.Printf("  metric_type: \"%s\"\n", lt.metricType)
+	fmt.Printf("  round_decimal: \"-1\"\n")
+	fmt.Printf("Query Vector (first 5 dims): %v\n", queryVector[:min(5, len(queryVector))])
+	fmt.Printf("========================================\n\n")
 }
 
 // min returns the minimum of two integers

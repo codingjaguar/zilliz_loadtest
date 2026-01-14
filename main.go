@@ -239,16 +239,15 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, level 
 }
 
 func displayResults(results []TestResult) {
-	fmt.Printf("%-10s | %-12s | %-12s | %-15s | %-15s\n", "QPS", "P95 (ms)", "P99 (ms)", "Avg Recall", "Total Queries")
-	fmt.Printf("%-10s-+-%-12s-+-%-12s-+-%-15s-+-%-15s\n", 
-		"----------", "------------", "------------", "---------------", "---------------")
+	fmt.Printf("%-10s | %-12s | %-12s | %-15s\n", "QPS", "P95 (ms)", "P99 (ms)", "Total Queries")
+	fmt.Printf("%-10s-+-%-12s-+-%-12s-+-%-15s\n", 
+		"----------", "------------", "------------", "---------------")
 	
 	for _, result := range results {
-		fmt.Printf("%-10d | %-12.2f | %-12.2f | %-15.4f | %-15d\n",
+		fmt.Printf("%-10d | %-12.2f | %-12.2f | %-15d\n",
 			result.QPS,
 			result.P95Latency,
 			result.P99Latency,
-			result.AvgRecall,
 			result.TotalQueries)
 	}
 }
