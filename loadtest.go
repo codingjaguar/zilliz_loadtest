@@ -393,48 +393,74 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 										jsonData := jsonBytesCol.Data()
 										if len(jsonData) > 0 {
 											fmt.Printf("Found JSON bytes, length: %d\n", len(jsonData))
-											if len(jsonData[0]) > 0 {
-												maxLen := 200
-												if len(jsonData[0]) < maxLen {
-													maxLen = len(jsonData[0])
+											// Check all JSON values, not just the first
+											for i := 0; i < len(jsonData) && i < 10; i++ {
+												if len(jsonData[i]) > 0 {
+													maxLen := 500
+													if len(jsonData[i]) < maxLen {
+														maxLen = len(jsonData[i])
+													}
+													fmt.Printf("JSON[%d] (full): %s\n", i, string(jsonData[i]))
+												} else {
+													fmt.Printf("JSON[%d]: empty\n", i)
 												}
-												fmt.Printf("First JSON value (first %d bytes): %s\n", 
-													maxLen, string(jsonData[0][:maxLen]))
 											}
 										}
 									}
 									
-									// Try ValueByIdx which might work for JSONBytes
+									// Try ValueByIdx which might work for JSONBytes - check all indices
 									if jsonBytesCol, ok := recallColumn.(interface{ ValueByIdx(int) ([]byte, error) }); ok {
-										if bytes, err := jsonBytesCol.ValueByIdx(0); err == nil {
-											fmt.Printf("Got JSON bytes via ValueByIdx(0): %s\n", string(bytes))
-											// Try to parse as JSON to extract recall
-											// The recall might be in a JSON structure like {"recall": 0.98} or just a number
-											var jsonVal interface{}
-											if err := json.Unmarshal(bytes, &jsonVal); err == nil {
-												fmt.Printf("Parsed JSON value: %v (type: %T)\n", jsonVal, jsonVal)
-												// Try to extract recall from JSON
-												if recallMap, ok := jsonVal.(map[string]interface{}); ok {
-													if r, exists := recallMap["recall"]; exists {
-														if rFloat, ok := r.(float64); ok {
+										// Try all indices to find where the recall data is
+										for idx := 0; idx < dynamicColumn.Len() && idx < 10; idx++ {
+											if bytes, err := jsonBytesCol.ValueByIdx(idx); err == nil {
+												fmt.Printf("JSON bytes[%d]: %s\n", idx, string(bytes))
+												// Try to parse as JSON to extract recall
+												var jsonVal interface{}
+												if err := json.Unmarshal(bytes, &jsonVal); err == nil {
+													fmt.Printf("Parsed JSON[%d]: %v (type: %T)\n", idx, jsonVal, jsonVal)
+													
+													// Try to extract recall from JSON - check various structures
+													if recallMap, ok := jsonVal.(map[string]interface{}); ok {
+														// Check for various possible field names
+														for _, fieldName := range []string{"recall", "recalls", "recall_rate", "recallRate"} {
+															if r, exists := recallMap[fieldName]; exists {
+																fmt.Printf("Found field '%s' in JSON[%d]: %v (type: %T)\n", fieldName, idx, r, r)
+																if rFloat, ok := r.(float64); ok {
+																	recall = rFloat
+																	fmt.Printf("Extracted recall from JSON map field '%s': %f\n", fieldName, recall)
+																	break
+																} else if rArray, ok := r.([]interface{}); ok && len(rArray) > 0 {
+																	if rFloat, ok := rArray[0].(float64); ok {
+																		recall = rFloat
+																		fmt.Printf("Extracted recall from JSON array in field '%s': %f\n", fieldName, recall)
+																		break
+																	}
+																}
+															}
+														}
+														// If map is not empty, print all keys
+														if len(recallMap) > 0 {
+															fmt.Printf("JSON[%d] map keys: ", idx)
+															for k := range recallMap {
+																fmt.Printf("%s ", k)
+															}
+															fmt.Printf("\n")
+														}
+													} else if rFloat, ok := jsonVal.(float64); ok {
+														recall = rFloat
+														fmt.Printf("Extracted recall as direct float64 from JSON[%d]: %f\n", idx, recall)
+													} else if rArray, ok := jsonVal.([]interface{}); ok && len(rArray) > 0 {
+														if rFloat, ok := rArray[0].(float64); ok {
 															recall = rFloat
-															fmt.Printf("Extracted recall from JSON map: %f\n", recall)
+															fmt.Printf("Extracted recall from JSON array[0] in JSON[%d]: %f\n", idx, recall)
 														}
 													}
-												} else if rFloat, ok := jsonVal.(float64); ok {
-													recall = rFloat
-													fmt.Printf("Extracted recall as direct float64: %f\n", recall)
-												} else if rArray, ok := jsonVal.([]interface{}); ok && len(rArray) > 0 {
-													if rFloat, ok := rArray[0].(float64); ok {
-														recall = rFloat
-														fmt.Printf("Extracted recall from JSON array[0]: %f\n", recall)
-													}
+												} else {
+													fmt.Printf("JSON unmarshal error for JSON[%d]: %v\n", idx, err)
 												}
 											} else {
-												fmt.Printf("JSON unmarshal error: %v\n", err)
+												fmt.Printf("ValueByIdx(%d) error: %v\n", idx, err)
 											}
-										} else {
-											fmt.Printf("ValueByIdx(0) error: %v\n", err)
 										}
 									}
 								}
