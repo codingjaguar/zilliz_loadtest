@@ -248,6 +248,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	}
 
 	// Measure latency only for the search operation (not including vector generation)
+	// Use high-precision timing for accurate measurements
 	searchStart := time.Now()
 	
 	// Execute search
@@ -266,6 +267,8 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		searchParams,
 	)
 
+	// Measure latency immediately after Search() returns
+	// This includes network round-trip and server processing time
 	latency := time.Since(searchStart)
 
 	if err != nil {
@@ -283,6 +286,36 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 	if len(searchResults) > 0 {
 		result := searchResults[0]
+		
+		// Debug: Print search result structure for the first query only
+		if queryNum == 1 {
+			fmt.Printf("\n=== DEBUG: Search Result Structure (Query #1) ===\n")
+			fmt.Printf("ResultCount: %d\n", result.ResultCount)
+			fmt.Printf("Scores length: %d\n", len(result.Scores))
+			fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
+			
+			if result.Fields != nil {
+				fmt.Printf("Fields type: %T\n", result.Fields)
+				fmt.Printf("Fields length: %d\n", len(result.Fields))
+				
+				// Try to iterate through all columns to see what's available
+				for i, col := range result.Fields {
+					if col != nil {
+						fmt.Printf("  Column[%d]: Name=%s, Type=%T, Len=%d\n", 
+							i, col.Name(), col, col.Len())
+					}
+				}
+				
+				// Try common field names
+				for _, fieldName := range []string{"recalls", "recall", "recalls_", "_recalls"} {
+					col := result.Fields.GetColumn(fieldName)
+					if col != nil {
+						fmt.Printf("  Found field '%s': Type=%T, Len=%d\n", fieldName, col, col.Len())
+					}
+				}
+			}
+			fmt.Printf("==============================================\n\n")
+		}
 		
 		// Try to get recall from Fields
 		if result.Fields != nil {
@@ -320,10 +353,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 				}
 			}
 		}
-		
-		// If recall is still 0, it might be that the field doesn't exist or wasn't returned
-		// This could happen if enable_recall_calculation isn't working as expected
-		// or if the SDK version handles it differently
 	}
 
 	return QueryResult{
