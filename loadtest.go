@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -324,12 +325,57 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 			if field.Len() > 0 {
 				// ColumnDynamic needs special handling - it's a JSON field
 				if dynamicCol, ok := field.(*entity.ColumnDynamic); ok {
+					// First, let's inspect the raw JSON to understand the structure
+					// ColumnDynamic embeds ColumnJSONBytes, so we can access ValueByIdx
+					if bytes, err := dynamicCol.ValueByIdx(0); err == nil {
+						if queryNum == 1 {
+							fmt.Printf("Raw JSON for recalls[0]: %s\n", string(bytes))
+						}
+
+						// The JSON might not have "recalls" as a field name - it might be the value directly
+						// or it might be structured differently. Let's try to parse it directly.
+						// If the JSON is just a number, parse it directly
+						if parsed, err := strconv.ParseFloat(string(bytes), 64); err == nil {
+							if queryNum == 1 {
+								fmt.Printf("Recall is a direct number in JSON: %f\n", parsed)
+							}
+							return parsed
+						}
+
+						// Try to parse as JSON and look for common field names
+						var jsonData interface{}
+						if err := json.Unmarshal(bytes, &jsonData); err == nil {
+							if queryNum == 1 {
+								fmt.Printf("Parsed JSON structure: %v (type: %T)\n", jsonData, jsonData)
+							}
+							// If it's a map, look for recall-related keys
+							if jsonMap, ok := jsonData.(map[string]interface{}); ok {
+								for key, val := range jsonMap {
+									if queryNum == 1 {
+										fmt.Printf("  JSON key '%s': %v (type: %T)\n", key, val, val)
+									}
+									// Try to extract numeric values
+									if floatVal, ok := val.(float64); ok {
+										return floatVal
+									}
+								}
+							} else if floatVal, ok := jsonData.(float64); ok {
+								// JSON is just a number
+								return floatVal
+							}
+						}
+					} else if queryNum == 1 {
+						fmt.Printf("Error getting raw JSON: %v\n", err)
+					}
+
 					// Try GetAsDouble first (most common for numeric JSON values)
 					if val, err := dynamicCol.GetAsDouble(0); err == nil {
 						if queryNum == 1 {
 							fmt.Printf("Found recall field '%s', value: %f (via GetAsDouble)\n", fieldName, val)
 						}
 						return val
+					} else if queryNum == 1 {
+						fmt.Printf("GetAsDouble(0) error: %v\n", err)
 					}
 
 					// Try GetAsString and parse
@@ -343,30 +389,28 @@ func (lt *LoadTester) extractRecallFromResults(searchResults []client.SearchResu
 						if queryNum == 1 {
 							fmt.Printf("Recall field '%s' string value: %s (could not parse)\n", fieldName, strVal)
 						}
+					} else if queryNum == 1 {
+						fmt.Printf("GetAsString(0) error: %v\n", err)
 					}
 
-					// Try Get() and handle the interface{}
+					// Try Get() - this returns the raw JSON string, not the parsed value
 					if val, err := dynamicCol.Get(0); err == nil {
 						if queryNum == 1 {
 							fmt.Printf("Found recall field '%s', raw value: %v (type: %T)\n", fieldName, val, val)
 						}
-						// Try to convert to float64
-						switch v := val.(type) {
-						case float64:
-							return v
-						case float32:
-							return float64(v)
-						case int:
-							return float64(v) / 100.0 // Convert from percentage
-						case int64:
-							return float64(v) / 100.0 // Convert from percentage
-						case string:
-							if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+						// Get() returns the raw JSON string, so we need to parse it
+						if strVal, ok := val.(string); ok {
+							// The string might be the JSON value itself, try to parse it
+							if parsed, err := strconv.ParseFloat(strVal, 64); err == nil {
 								return parsed
+							}
+							// Or it might be JSON that needs unmarshaling
+							if queryNum == 1 {
+								fmt.Printf("Raw JSON string: %s\n", strVal)
 							}
 						}
 					} else if queryNum == 1 {
-						fmt.Printf("Error getting value from recall field: %v\n", err)
+						fmt.Printf("Get(0) error: %v\n", err)
 					}
 				} else {
 					// Not a ColumnDynamic, try regular Get()
