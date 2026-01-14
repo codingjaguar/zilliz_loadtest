@@ -368,7 +368,7 @@ func calculatePercentile(sortedData []float64, percentile int) float64 {
 	return sortedData[lower]*(1-weight) + sortedData[upper]*weight
 }
 
-// SeedDatabase seeds the database with the specified number of vectors using concurrent batching
+// SeedDatabase seeds the database with the specified number of vectors
 func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVectors int) error {
 	ctx := context.Background()
 
@@ -379,11 +379,9 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 	}
 	defer milvusClient.Close()
 
-	// Smaller batch size for better concurrency
-	// With 768 dimensions, each vector is ~3KB, so 10,000 vectors = ~30MB (well under 64MB limit)
-	batchSize := 10000
-	concurrency := 3 // Number of concurrent workers
-	
+	// Batch size for efficient inserts (reduced to avoid gRPC message size limits and throttling)
+	// With 768 dimensions, each vector is ~3KB, so 15,000 vectors = ~45MB (well under 64MB limit)
+	batchSize := 15000
 	totalBatches := (totalVectors + batchSize - 1) / batchSize
 
 	fmt.Printf("\nStarting database seed operation\n")
@@ -391,167 +389,72 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 	fmt.Printf("Collection: %s\n", collection)
 	fmt.Printf("Vector Dimension: %d\n", vectorDim)
 	fmt.Printf("Total Vectors: %d\n", totalVectors)
-	fmt.Printf("Batch Size: %d\n", batchSize)
-	fmt.Printf("Concurrency: %d workers\n\n", concurrency)
+	fmt.Printf("Batch Size: %d\n\n", batchSize)
 
 	startTime := time.Now()
-	vectorsInserted := int64(0)
-	var mu sync.Mutex
+	vectorsInserted := 0
 
-	// Batch job structure
-	type batchJob struct {
-		batchNum       int
-		startIdx       int
-		endIdx         int
-		currentBatchSize int
-	}
-
-	// Progress tracking
-	type batchResult struct {
-		batchNum       int
-		vectors        int
-		generateTime   time.Duration
-		uploadTime     time.Duration
-		totalTime      time.Duration
-	}
-
-	jobs := make(chan batchJob, totalBatches)
-	results := make(chan batchResult, totalBatches)
-	errors := make(chan error, 1)
-
-	// Start worker pool
-	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for job := range jobs {
-				// Generate vectors for this batch
-				generateStart := time.Now()
-				vectors := make([][]float32, job.currentBatchSize)
-				for i := 0; i < job.currentBatchSize; i++ {
-					vectors[i] = generateSeedingVector(vectorDim, int64(job.startIdx+i))
-				}
-				generateTime := time.Since(generateStart)
-
-				// Create vector column
-				vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
-
-				// Insert batch
-				uploadStart := time.Now()
-				_, err := milvusClient.Insert(ctx, collection, "", vectorColumn)
-				uploadTime := time.Since(uploadStart)
-				totalTime := time.Since(generateStart)
-
-				if err != nil {
-					select {
-					case errors <- fmt.Errorf("failed to insert batch %d: %w", job.batchNum+1, err):
-					default:
-					}
-					return
-				}
-
-				// Send result
-				results <- batchResult{
-					batchNum:     job.batchNum,
-					vectors:      job.currentBatchSize,
-					generateTime: generateTime,
-					uploadTime:   uploadTime,
-					totalTime:    totalTime,
-				}
-			}
-		}(w)
-	}
-
-	// Send all jobs
-	go func() {
-		defer close(jobs)
-		for batchNum := 0; batchNum < totalBatches; batchNum++ {
-			batchStart := batchNum * batchSize
-			batchEnd := batchStart + batchSize
-			if batchEnd > totalVectors {
-				batchEnd = totalVectors
-			}
-			jobs <- batchJob{
-				batchNum:       batchNum,
-				startIdx:       batchStart,
-				endIdx:         batchEnd,
-				currentBatchSize: batchEnd - batchStart,
-			}
+	for batchNum := 0; batchNum < totalBatches; batchNum++ {
+		batchStart := batchNum * batchSize
+		batchEnd := batchStart + batchSize
+		if batchEnd > totalVectors {
+			batchEnd = totalVectors
 		}
-	}()
+		currentBatchSize := batchEnd - batchStart
 
-	// Close results channel when all workers are done
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+		// Show progress before generating vectors
+		progressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
+		fmt.Printf("[Progress: %.1f%%] Generating batch %d/%d (%d vectors)...\r",
+			progressPercent, batchNum+1, totalBatches, currentBatchSize)
 
-	// Process results and update progress
-	completedBatches := 0
-	batchResults := make(map[int]batchResult) // Track results by batch number for ordered output
-	resultsClosed := false
-
-	for completedBatches < totalBatches {
-		// First, try to process any results we have in order
-		for completedBatches < totalBatches {
-			if result, exists := batchResults[completedBatches]; exists {
-				mu.Lock()
-				vectorsInserted += int64(result.vectors)
-				inserted := vectorsInserted
-				mu.Unlock()
-
-				// Calculate progress
-				progressPercent := float64(inserted) / float64(totalVectors) * 100
-				elapsedTotal := time.Since(startTime)
-				avgRate := float64(inserted) / elapsedTotal.Seconds()
-				remainingVectors := totalVectors - int(inserted)
-				estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
-				rate := float64(result.vectors) / result.totalTime.Seconds()
-
-				// Print progress
-				fmt.Printf("[Progress: %.1f%%] Batch %d/%d: Inserted %d vectors (Generate: %v, Upload: %v, Total: %v, %.0f vec/s) [ETA: %v]\n",
-					progressPercent, result.batchNum+1, totalBatches, result.vectors,
-					result.generateTime.Round(time.Millisecond),
-					result.uploadTime.Round(time.Millisecond),
-					result.totalTime.Round(time.Millisecond),
-					rate,
-					estimatedTimeRemaining.Round(time.Second))
-
-				// Remove processed result
-				delete(batchResults, completedBatches)
-				completedBatches++
-			} else {
-				// Next batch in sequence not ready yet
-				break
-			}
-		}
-
-		// If we've processed all batches, we're done
-		if completedBatches >= totalBatches {
-			break
-		}
-
-		// Wait for more results
-		select {
-		case err := <-errors:
-			return err
-		case result, ok := <-results:
-			if !ok {
-				// Channel closed, but we might still have unprocessed results
-				resultsClosed = true
-				// Continue processing any remaining results
-				continue
-			}
+		// Generate vectors for this batch
+		generateStart := time.Now()
+		vectors := make([][]float32, currentBatchSize)
+		for i := 0; i < currentBatchSize; i++ {
+			// Use batchStart + i as seed to ensure unique vectors
+			vectors[i] = generateSeedingVector(vectorDim, int64(batchStart+i))
 			
-			// Store result for ordered processing
-			batchResults[result.batchNum] = result
+			// Show progress every 5000 vectors during generation
+			if (i+1)%5000 == 0 {
+				progressPercent := float64(vectorsInserted+i+1) / float64(totalVectors) * 100
+				fmt.Printf("\r[Progress: %.1f%%] Generating batch %d/%d (%d/%d vectors)...",
+					progressPercent, batchNum+1, totalBatches, i+1, currentBatchSize)
+			}
+		}
+		generateTime := time.Since(generateStart)
+
+		// Create vector column
+		vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
+
+		// Insert the batch (using Insert instead of Upsert since autoID is enabled)
+		batchStartTime := time.Now()
+		uploadProgressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
+		fmt.Printf("\r[Progress: %.1f%%] Uploading batch %d/%d...",
+			uploadProgressPercent, batchNum+1, totalBatches)
+		
+		_, err := milvusClient.Insert(ctx, collection, "", vectorColumn)
+		if err != nil {
+			return fmt.Errorf("failed to insert batch %d: %w", batchNum+1, err)
 		}
 
-		// If results channel is closed and we have no more results to process, break
-		if resultsClosed && len(batchResults) == 0 {
-			break
-		}
+		vectorsInserted += currentBatchSize
+		uploadTime := time.Since(batchStartTime)
+		totalBatchTime := time.Since(generateStart)
+		rate := float64(currentBatchSize) / totalBatchTime.Seconds()
+		
+		// Calculate estimated time remaining
+		elapsedTotal := time.Since(startTime)
+		avgRate := float64(vectorsInserted) / elapsedTotal.Seconds()
+		remainingVectors := totalVectors - vectorsInserted
+		estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
+		
+		progressPercent = float64(vectorsInserted) / float64(totalVectors) * 100
+		
+		// Print detailed progress after each batch
+		fmt.Printf("\r[Progress: %.1f%%] Batch %d/%d: Inserted %d vectors (Generate: %v, Upload: %v, Total: %v, %.0f vec/s) [ETA: %v]\n",
+			progressPercent, batchNum+1, totalBatches, currentBatchSize,
+			generateTime.Round(time.Millisecond), uploadTime.Round(time.Millisecond),
+			totalBatchTime.Round(time.Millisecond), rate, estimatedTimeRemaining.Round(time.Second))
 	}
 
 	totalElapsed := time.Since(startTime)

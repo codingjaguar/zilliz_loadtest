@@ -97,14 +97,14 @@ Starting database seed operation
 Collection: my_collection
 Vector Dimension: 768
 Total Vectors: 2000000
-Batch Size: 10000
-Concurrency: 3 workers
+Batch Size: 15000
 
-[Progress: 0.5%] Batch 1/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.2s, Total: 1.8s, 5556 vec/s) [ETA: 5m 58s]
-[Progress: 1.0%] Batch 2/200: Inserted 10000 vectors (Generate: 0.5s, Upload: 1.1s, Total: 1.6s, 6250 vec/s) [ETA: 5m 18s]
-[Progress: 1.5%] Batch 3/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.3s, Total: 1.9s, 5263 vec/s) [ETA: 6m 12s]
+[Progress: 0.0%] Generating batch 1/134 (15000 vectors)...
+[Progress: 0.8%] Batch 1/134: Inserted 15000 vectors (Generate: 0.9s, Upload: 1.7s, Total: 2.6s, 5769 vec/s) [ETA: 5m 45s]
+[Progress: 1.5%] Generating batch 2/134 (15000 vectors)...
+[Progress: 1.5%] Batch 2/134: Inserted 15000 vectors (Generate: 0.8s, Upload: 1.6s, Total: 2.4s, 6250 vec/s) [ETA: 5m 18s]
 ...
-[Progress: 99.5%] Batch 200/200: Inserted 10000 vectors (Generate: 0.6s, Upload: 1.2s, Total: 1.8s, 5556 vec/s) [ETA: 0s]
+[Progress: 100.0%] Batch 134/134: Inserted 15000 vectors (Generate: 0.9s, Upload: 1.7s, Total: 2.6s, 5769 vec/s) [ETA: 0s]
 
 ================================
 Seed operation completed!
@@ -176,11 +176,11 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions using concurrent batching:
-  - Batch size: 10,000 vectors per batch (~30MB, well under 64MB gRPC limit)
-  - Concurrency: 3 workers processing batches in parallel
+- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions:
+  - Batch size: 15,000 vectors per batch (~45MB, well under 64MB gRPC limit)
   - Uses `Insert` API since autoID is enabled and no primary key is required
   - Provides real-time progress updates with ETA and performance metrics
+  - Sequential processing to avoid overwhelming the server and reduce write errors
 - **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
 - **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
 - **Collection Requirements**: Ensure your collection exists and is configured with:
