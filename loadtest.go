@@ -287,36 +287,6 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	if len(searchResults) > 0 {
 		result := searchResults[0]
 		
-		// Debug: Print search result structure for the first query only
-		if queryNum == 1 {
-			fmt.Printf("\n=== DEBUG: Search Result Structure (Query #1) ===\n")
-			fmt.Printf("ResultCount: %d\n", result.ResultCount)
-			fmt.Printf("Scores length: %d\n", len(result.Scores))
-			fmt.Printf("Fields is nil: %v\n", result.Fields == nil)
-			
-			if result.Fields != nil {
-				fmt.Printf("Fields type: %T\n", result.Fields)
-				fmt.Printf("Fields length: %d\n", len(result.Fields))
-				
-				// Try to iterate through all columns to see what's available
-				for i, col := range result.Fields {
-					if col != nil {
-						fmt.Printf("  Column[%d]: Name=%s, Type=%T, Len=%d\n", 
-							i, col.Name(), col, col.Len())
-					}
-				}
-				
-				// Try common field names
-				for _, fieldName := range []string{"recalls", "recall", "recalls_", "_recalls"} {
-					col := result.Fields.GetColumn(fieldName)
-					if col != nil {
-						fmt.Printf("  Found field '%s': Type=%T, Len=%d\n", fieldName, col, col.Len())
-					}
-				}
-			}
-			fmt.Printf("==============================================\n\n")
-		}
-		
 		// Try to get recall from Fields
 		if result.Fields != nil {
 			// Try "recalls" first (as shown in Python docs)
@@ -327,9 +297,30 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 			}
 
 			if recallColumn != nil {
-				// The recall column should contain float values
-				// Extract the first recall value (typically one per query)
-				if floatColumn, ok := recallColumn.(*entity.ColumnFloat); ok {
+				// The recall column is returned as ColumnDynamic (JSON field)
+				// Extract the first recall value (typically one per query, but may have one per result)
+				if dynamicColumn, ok := recallColumn.(*entity.ColumnDynamic); ok {
+					if dynamicColumn.Len() > 0 {
+						// Try to get as double (float64)
+						if val, err := dynamicColumn.GetAsDouble(0); err == nil {
+							recall = val
+						} else {
+							// Fallback: try to get as interface{} and convert
+							if val, err := dynamicColumn.Get(0); err == nil {
+								switch v := val.(type) {
+								case float64:
+									recall = v
+								case float32:
+									recall = float64(v)
+								case int64:
+									recall = float64(v) / 100.0 // Convert from percentage
+								case int:
+									recall = float64(v) / 100.0 // Convert from percentage
+								}
+							}
+						}
+					}
+				} else if floatColumn, ok := recallColumn.(*entity.ColumnFloat); ok {
 					if floatColumn.Len() > 0 {
 						if val, err := floatColumn.ValueByIdx(0); err == nil {
 							recall = float64(val)
