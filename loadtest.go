@@ -128,6 +128,45 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	// This allows queries to complete even after the test duration ends
 	queryCtx := ctx // Use parent context, not testCtx
 
+	// Store results for latency calculation
+	var allResults []QueryResult
+	var resultsMu sync.Mutex
+	queriesCompleted := 0 // Track completion count for status updates
+
+	// Start a goroutine to collect results as they come in
+	go func() {
+		for result := range resultsChan {
+			resultsMu.Lock()
+			allResults = append(allResults, result)
+			queriesCompleted++
+			resultsMu.Unlock()
+		}
+	}()
+
+	// Status update ticker - print progress every 5 seconds
+	statusTicker := time.NewTicker(5 * time.Second)
+	defer statusTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-testCtx.Done():
+				return
+			case <-statusTicker.C:
+				mu.Lock()
+				fired := queriesFired
+				mu.Unlock()
+				resultsMu.Lock()
+				completed := queriesCompleted
+				resultsMu.Unlock()
+				elapsed := time.Since(startTime)
+				currentQPS := float64(completed) / elapsed.Seconds()
+				fmt.Printf("[Status] Elapsed: %v | Fired: %d | Completed: %d | Current QPS: %.2f\n",
+					elapsed.Round(time.Second), fired, completed, currentQPS)
+			}
+		}
+	}()
+
 	go func() {
 		for {
 			select {
@@ -161,7 +200,12 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	totalFired := queriesFired
 	mu.Unlock()
 
-	fmt.Printf("Test duration ended. Waiting for %d in-flight queries to complete...\n", totalFired)
+	resultsMu.Lock()
+	completedDuringTest := queriesCompleted
+	resultsMu.Unlock()
+
+	inFlight := totalFired - completedDuringTest
+	fmt.Printf("\nTest duration ended. Waiting for %d in-flight queries to complete...\n", inFlight)
 
 	// Wait for all queries to complete (with longer timeout for long tests)
 	waitTimeout := duration / 2
@@ -178,22 +222,48 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		close(done)
 	}()
 
+	// Show progress while waiting
+	progressTicker := time.NewTicker(2 * time.Second)
+	defer progressTicker.Stop()
+
+	progressDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-progressDone:
+				return
+			case <-progressTicker.C:
+				resultsMu.Lock()
+				completed := queriesCompleted
+				resultsMu.Unlock()
+				fmt.Printf("  Waiting... %d queries completed so far\n", completed)
+			}
+		}
+	}()
+
 	select {
 	case <-done:
+		close(progressDone)
 		fmt.Printf("All queries completed\n")
 	case <-time.After(waitTimeout):
+		close(progressDone)
 		fmt.Printf("Warning: Timed out waiting for queries after %v. Some queries may still be running\n", waitTimeout)
 	}
 
 	close(resultsChan)
+
+	// Give the result collector goroutine a moment to finish
+	time.Sleep(100 * time.Millisecond)
+
 	elapsed := time.Since(startTime)
 
-	// Collect results
+	// Process collected results for latency calculation
+	resultsMu.Lock()
 	var latencies []float64
 	errors := 0
 	firstError := error(nil)
 
-	for result := range resultsChan {
+	for _, result := range allResults {
 		if result.Error != nil {
 			errors++
 			if firstError == nil {
@@ -203,6 +273,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		}
 		latencies = append(latencies, float64(result.Latency.Milliseconds()))
 	}
+	resultsMu.Unlock()
 
 	// Print first error if all queries failed
 	if len(latencies) == 0 && firstError != nil {
