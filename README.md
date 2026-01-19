@@ -7,14 +7,13 @@ A CLI tool for seeding and load testing Zilliz Cloud with configurable QPS and c
 - **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the insert API
 - Configurable QPS levels (default: 100, 500, 1000 QPS)
 - Measures P95 and P99 latencies
-- Tracks recall accuracy from Zilliz Cloud responses
-- Real-time progress reporting
-- Comprehensive results summary
+- Real-time status updates during load tests
+- Waits for all in-flight queries to complete before reporting results
+- Comprehensive results summary with fired vs completed QPS metrics
 
 ## Installation
 
 ```bash
-cd /Users/jaybyoun/developer/zilliz-loadtest
 go mod download
 go build -o zilliz-loadtest
 ```
@@ -61,10 +60,9 @@ When you choose option 2, you will be prompted to enter:
    - `IP`: Inner Product
    - `COSINE`: Cosine similarity
 6. **QPS Levels** (required): Comma-separated QPS values to test (e.g., `100,500,1000`)
-7. **Level** (optional, default: 5): Integer from 1-10 where:
-   - Level 1: Optimizes for latency (faster searches)
-   - Level 10: Optimizes for recall (more accurate results)
-8. **Duration** (optional, default: 30s): Duration for each QPS test (e.g., `30s`, `1m`)
+7. **Duration** (optional, default: 30s): Duration for each QPS test (e.g., `30s`, `1m`)
+
+**Note**: The tool uses the default search level (level 1) which optimizes for latency. This is ideal for pure latency testing.
 
 ## Example Output
 
@@ -139,7 +137,6 @@ Enter Metric Type: L2
 
 Enter QPS levels to test (comma-separated, e.g., 100,500,1000):
 QPS Levels: 100,500,1000
-Enter Level (1-10, where 10 optimizes for recall) [default: 5]: 7
 Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: 30s
 
 Starting Zilliz Cloud Load Test
@@ -148,28 +145,64 @@ Database URL: https://your-cluster.zillizcloud.com
 Collection: my_collection
 Vector Dimension: 768
 Metric Type: L2
-Level: 7
 Duration per QPS: 30s
 QPS Levels: [100 500 1000]
 
 --- Running test at 100 QPS for 30s ---
-Completed: 3000 queries in 30.5s (actual QPS: 98.36, errors: 0)
+[Status] Elapsed: 5s | Fired: 500 | Completed: 485 | Current QPS: 97.00
+[Status] Elapsed: 10s | Fired: 1000 | Completed: 975 | Current QPS: 97.50
+[Status] Elapsed: 15s | Fired: 1500 | Completed: 1470 | Current QPS: 98.00
+[Status] Elapsed: 20s | Fired: 2000 | Completed: 1965 | Current QPS: 98.25
+[Status] Elapsed: 25s | Fired: 2500 | Completed: 2455 | Current QPS: 98.20
+[Status] Elapsed: 30s | Fired: 3000 | Completed: 2940 | Current QPS: 98.00
+
+Test duration ended. Waiting for 60 in-flight queries to complete...
+  Waiting... 2950 queries completed so far
+  Waiting... 2995 queries completed so far
+All queries completed
+Fired: 3000 queries | Completed: 3000 queries in 30.5s
+Fired at: 100 QPS | Completed at: 98.36 QPS | Errors: 0
 
 --- Running test at 500 QPS for 30s ---
-Completed: 15000 queries in 30.2s (actual QPS: 496.69, errors: 0)
+[Status] Elapsed: 5s | Fired: 2500 | Completed: 2400 | Current QPS: 480.00
+[Status] Elapsed: 10s | Fired: 5000 | Completed: 4850 | Current QPS: 485.00
+[Status] Elapsed: 15s | Fired: 7500 | Completed: 7300 | Current QPS: 486.67
+[Status] Elapsed: 20s | Fired: 10000 | Completed: 9750 | Current QPS: 487.50
+[Status] Elapsed: 25s | Fired: 12500 | Completed: 12200 | Current QPS: 488.00
+[Status] Elapsed: 30s | Fired: 15000 | Completed: 14650 | Current QPS: 488.33
+
+Test duration ended. Waiting for 350 in-flight queries to complete...
+  Waiting... 14750 queries completed so far
+  Waiting... 14900 queries completed so far
+All queries completed
+Fired: 15000 queries | Completed: 15000 queries in 30.2s
+Fired at: 500 QPS | Completed at: 496.69 QPS | Errors: 0
 
 --- Running test at 1000 QPS for 30s ---
-Completed: 30000 queries in 30.1s (actual QPS: 996.68, errors: 2)
+[Status] Elapsed: 5s | Fired: 5000 | Completed: 4800 | Current QPS: 960.00
+[Status] Elapsed: 10s | Fired: 10000 | Completed: 9600 | Current QPS: 960.00
+[Status] Elapsed: 15s | Fired: 15000 | Completed: 14400 | Current QPS: 960.00
+[Status] Elapsed: 20s | Fired: 20000 | Completed: 19200 | Current QPS: 960.00
+[Status] Elapsed: 25s | Fired: 25000 | Completed: 24000 | Current QPS: 960.00
+[Status] Elapsed: 30s | Fired: 30000 | Completed: 28800 | Current QPS: 960.00
+
+Test duration ended. Waiting for 1200 in-flight queries to complete...
+  Waiting... 29000 queries completed so far
+  Waiting... 29950 queries completed so far
+All queries completed
+Fired: 30000 queries | Completed: 29998 queries in 30.1s
+Fired at: 1000 QPS | Completed at: 996.68 QPS | Errors: 2
+Note: 2 queries were still in flight when test ended (100.0% completion rate)
 
 ==============================
 Load Test Results Summary
 ==============================
 
-QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
------------+--------------+--------------+----------------+---------------
-100        | 45.23        | 67.89        | 0.9500         | 3000
-500        | 52.45        | 89.12        | 0.9498         | 15000
-1000       | 78.34        | 125.67       | 0.9495         | 30000
+QPS        | P95 (ms)     | P99 (ms)     | Total Queries
+-----------+--------------+--------------+---------------
+100        | 45.23        | 67.89        | 3000
+500        | 52.45        | 89.12        | 15000
+1000       | 78.34        | 125.67       | 29998
 ```
 
 ## Notes
@@ -193,11 +226,11 @@ QPS        | P95 (ms)     | P99 (ms)     | Avg Recall     | Total Queries
 - The tool uses random query vectors for testing. In production, you may want to use actual query vectors from your dataset.
 - **Vector Dimension**: Required parameter that must match the dimension of vectors in your collection.
 - **Metric Type**: Required parameter that must match the metric type used when creating the collection index. Common options are L2 (Euclidean distance), IP (Inner Product), and COSINE (Cosine similarity).
-- **Level Parameter**: The level parameter (1-10) controls the trade-off between recall and latency:
-  - Lower levels (1-3): Faster searches, potentially lower recall
-  - Medium levels (4-7): Balanced performance
-  - Higher levels (8-10): Better recall, potentially higher latency
-- **Recall Measurement**: Recall is automatically calculated by Zilliz Cloud when `enable_recall_calculation` is enabled in the search parameters. The tool uses this feature to get accurate recall rates for each query. See the [Zilliz documentation](https://docs.zilliz.com/docs/tune-recall-rate#tune-recall-rate) for more details.
+- **Search Level**: The tool uses the default search level (level 1), which optimizes for latency. This is ideal for pure latency testing. The level parameter is not configurable in this version.
+- **QPS Measurement**: The tool fires queries at the exact target QPS rate, regardless of completion time. This allows you to measure latency at the intended load level. The results show both "Fired at" (target QPS) and "Completed at" (actual completion rate) metrics.
+- **Status Updates**: During the test, status updates are printed every 5 seconds showing elapsed time, fired queries, completed queries, and current QPS.
+- **In-Flight Queries**: After the test duration ends, the tool waits for all in-flight queries to complete before reporting final results. This ensures accurate latency measurements even if queries take longer than the test duration.
+- **Latency Metrics**: P95 and P99 latencies are calculated from all completed queries, providing accurate percentile measurements.
 - Ensure your collection is loaded and contains data before running the load test.
 
 ### General
