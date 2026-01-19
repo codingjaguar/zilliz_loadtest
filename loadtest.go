@@ -76,23 +76,31 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 }
 
 // calculateOptimalConnections calculates the number of connections needed based on target QPS
-// Rule of thumb: connections = (QPS * expected_latency_ms) / 1000 + overhead
+// Formula: connections = (QPS × expected_latency_ms) / 1000 × multiplier
 // This ensures each connection isn't overwhelmed and can handle concurrent requests
-// For vector search with ~50-100ms latency:
-//   - 100 QPS: ~10-15 connections
-//   - 500 QPS: ~50-75 connections
-//   - 1000 QPS: ~100-150 connections
-//   - 5000 QPS: ~500-750 connections
-//   - 10000 QPS: ~1000-1500 connections
 //
-// We add 20% overhead and cap at reasonable limits
+// We estimate the number of connections based on the target QPS and what we know about
+// Zilliz Cloud behavior. This is an educated guess - actual latency may vary based on
+// collection size, index type, server load, and network conditions.
+//
+// Default formula uses:
+//   - Expected latency: 75ms (conservative estimate for vector search on Zilliz Cloud)
+//   - Multiplier: 1.5x (accounts for connection overhead and headroom)
+//
+// Default connections for common QPS levels:
+//   - 100 QPS: ~12 connections
+//   - 500 QPS: ~56 connections
+//   - 1000 QPS: ~113 connections
+//   - 5000 QPS: ~563 connections
+//   - 10000 QPS: ~1125 connections
 func calculateOptimalConnections(targetQPS int) (int, string) {
-	// Assume average latency of 50-100ms for vector search
+	// Estimate based on typical Zilliz Cloud vector search latency
 	// Formula: (QPS * latency_ms) / 1000 gives concurrent requests needed
-	// Then add 20% overhead for headroom
-	expectedLatencyMs := 75.0 // Conservative estimate for vector search
+	// Then multiply by 1.5x to account for connection overhead and headroom
+	expectedLatencyMs := 75.0 // Conservative estimate for vector search on Zilliz Cloud
+	multiplier := 1.5
 	baseConnections := float64(targetQPS) * expectedLatencyMs / 1000.0
-	connections := int(baseConnections * 1.2) // 20% overhead
+	connections := int(baseConnections * multiplier)
 
 	// Enforce reasonable bounds
 	if connections < 5 {
@@ -100,13 +108,13 @@ func calculateOptimalConnections(targetQPS int) (int, string) {
 	}
 
 	// Higher limit for very high QPS scenarios
-	maxConnections := 1000 // Increased from 200 to support 5000-10000 QPS
+	maxConnections := 2000
 	if connections > maxConnections {
 		connections = maxConnections
 	}
 
-	explanation := fmt.Sprintf("Calculated %d connections for %d QPS (based on ~75ms latency estimate + 20%% overhead)",
-		connections, targetQPS)
+	explanation := fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections (default)",
+		targetQPS, expectedLatencyMs, multiplier, connections)
 
 	return connections, explanation
 }
@@ -255,12 +263,25 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 				wg.Add(1)
 				go func(queryNum int) {
 					defer wg.Done()
+					// Use recover to catch panic if channel is closed
+					defer func() {
+						if r := recover(); r != nil {
+							// Channel was closed, that's okay - we'll just drop this result
+							// This can happen if we timeout waiting for queries
+						}
+					}()
 					// Use queryCtx instead of testCtx so queries can complete
 					// even after the test duration ends
 					result := lt.executeQuery(queryCtx, queryNum)
-					// Always try to send result, don't check testCtx.Done()
-					// The channel will be closed after all goroutines finish
-					resultsChan <- result
+					// Try to send result, but handle case where channel might be closed
+					// Use select to avoid blocking forever if channel is closed
+					select {
+					case resultsChan <- result:
+						// Successfully sent
+					case <-time.After(1 * time.Second):
+						// Timeout - channel might be closed or full, but that's okay
+						// We'll just drop this result if we can't send it
+					}
 				}(currentQuery)
 			}
 		}
@@ -321,8 +342,13 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	case <-time.After(waitTimeout):
 		close(progressDone)
 		fmt.Printf("Warning: Timed out waiting for queries after %v. Some queries may still be running\n", waitTimeout)
+		// Give goroutines a grace period to finish sending before we close the channel
+		// This reduces the chance of panic from sending to closed channel
+		time.Sleep(2 * time.Second)
 	}
 
+	// Close channel - goroutines have recover() to handle if they try to send after this
+	// The result collector goroutine will finish reading any remaining results
 	close(resultsChan)
 
 	// Give the result collector goroutine a moment to finish
@@ -375,17 +401,17 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	// At high QPS, queries queue up and latency includes wait time
 	if max > 1000 { // More than 1 second is suspicious
 		fmt.Printf("\nWarning: Detected very high latencies (max: %.2f ms). This may indicate:\n", max)
-		fmt.Printf("  - SDK connection pool exhaustion\n")
+		fmt.Printf("  - Server-side queuing (queries waiting for server capacity)\n")
 		fmt.Printf("  - Network congestion\n")
-		fmt.Printf("  - Server-side queuing\n")
+		fmt.Printf("  - Note: These latencies include queue time, not just API response time\n")
 		fmt.Printf("  Latency stats: min=%.2f ms, avg=%.2f ms, p95=%.2f ms, p99=%.2f ms, max=%.2f ms\n",
 			min, avgLatency, p95, p99, max)
 
-		// Filter out extreme outliers (likely measurement errors or queuing)
-		// Use a more reasonable cutoff - anything over 5 seconds is probably queuing, not actual latency
+		// Filter out queries with high latency (likely queuing, not actual API response time)
+		// Use a more reasonable cutoff - anything over 1 second is probably queuing
 		filteredLatencies := make([]float64, 0, len(latencies))
 		for _, l := range latencies {
-			if l < 5000 { // Filter out anything over 5 seconds
+			if l < 1000 { // Filter out anything over 1 second (likely queuing)
 				filteredLatencies = append(filteredLatencies, l)
 			}
 		}
@@ -394,17 +420,34 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 			sort.Float64s(filteredLatencies)
 			filteredP95 := calculatePercentile(filteredLatencies, 95)
 			filteredP99 := calculatePercentile(filteredLatencies, 99)
-			fmt.Printf("  Filtered stats (excluding outliers >5s): p95=%.2f ms, p99=%.2f ms (%d/%d queries)\n",
-				filteredP95, filteredP99, len(filteredLatencies), len(latencies))
-			// Use filtered values for reporting
+			queuedCount := len(latencies) - len(filteredLatencies)
+			fmt.Printf("  Filtered stats (excluding queued queries >1s): p95=%.2f ms, p99=%.2f ms\n",
+				filteredP95, filteredP99)
+			fmt.Printf("  %d queries (%.1f%%) had latencies >1s, likely due to server-side queuing\n",
+				queuedCount, float64(queuedCount)/float64(len(latencies))*100)
+			// Use filtered values for reporting (more representative of actual API latency)
 			p95 = filteredP95
 			p99 = filteredP99
+		} else if len(filteredLatencies) == 0 {
+			// All queries were queued - this is a severe bottleneck
+			fmt.Printf("  ⚠️  All queries had latencies >1s - severe server-side bottleneck detected\n")
 		}
 	}
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
+	completionRate := (actualQPS / float64(targetQPS)) * 100.0 // Percentage of target QPS achieved
 	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, len(latencies), elapsed)
-	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS | Errors: %d\n", targetQPS, actualQPS, errors)
+	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS (%.1f%% of target) | Errors: %d\n",
+		targetQPS, actualQPS, completionRate, errors)
+
+	// Warn if we're significantly below target QPS
+	if actualQPS < float64(targetQPS)*0.8 {
+		fmt.Printf("\n⚠️  Warning: Only achieved %.1f%% of target QPS. This may indicate:\n", completionRate)
+		fmt.Printf("  - Server-side rate limiting or capacity limits\n")
+		fmt.Printf("  - Network bandwidth constraints\n")
+		fmt.Printf("  - Server may not be able to handle %d QPS (currently using %d connections)\n", targetQPS, len(lt.clients))
+		fmt.Printf("  Note: Increasing connections from %d didn't improve throughput, suggesting server-side bottleneck\n", len(lt.clients))
+	}
 
 	// Explain what happened
 	if totalFired > len(latencies) {

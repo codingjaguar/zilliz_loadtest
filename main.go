@@ -122,10 +122,114 @@ func runLoadTestFlow() {
 		}
 	}
 
-	// Run the load test
-	if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, duration, vectorDim, metricType); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Ask if user wants to customize connection counts
+	fmt.Println("\nConnection Configuration")
+	fmt.Println("========================")
+	fmt.Println("By default, connections are estimated using: (QPS × 75ms) / 1000 × 1.5")
+	fmt.Println("This is an educated guess based on Zilliz Cloud behavior - actual latency may vary.")
+	customize := promptInput("Customize connection counts for each QPS level? (yes/no) [default: no]: ", false)
+	customConnections := make(map[int]int)
+	
+	if strings.ToLower(strings.TrimSpace(customize)) == "yes" {
+		for _, qps := range qpsLevels {
+			defaultConnections, _ := calculateOptimalConnections(qps)
+			connInput := promptInput(fmt.Sprintf("Enter number of connections for %d QPS [default: %d]: ", qps, defaultConnections), false)
+			if connInput != "" {
+				connCount, err := strconv.Atoi(strings.TrimSpace(connInput))
+				if err != nil || connCount < 1 {
+					fmt.Printf("Warning: Invalid connection count '%s', using default %d\n", connInput, defaultConnections)
+					customConnections[qps] = defaultConnections
+				} else {
+					customConnections[qps] = connCount
+				}
+			} else {
+				customConnections[qps] = defaultConnections
+			}
+		}
+	}
+
+	// Run load tests in a loop, reusing credentials
+	for {
+		// Run the load test
+		if err := runLoadTest(apiKey, databaseURL, collection, qpsLevels, duration, vectorDim, metricType, customConnections); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Ask if user wants to run another test
+		fmt.Println("\n" + strings.Repeat("=", 60))
+		fmt.Println("Load test completed!")
+		fmt.Println(strings.Repeat("=", 60))
+		fmt.Println("\nWhat would you like to do?")
+		fmt.Println("1. Run another test with the same configuration")
+		fmt.Println("2. Run another test with new QPS levels and/or duration")
+		fmt.Println("3. Exit")
+		choice := promptInput("\nEnter your choice (1, 2, or 3): ", false)
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			// Continue with same configuration
+			fmt.Println() // Add spacing before next test
+			continue
+		case "2":
+			// Get new QPS levels
+			fmt.Println("\nEnter new QPS levels to test (comma-separated, e.g., 100,500,1000):")
+			qpsInput := promptInput("QPS Levels: ", true)
+			newQpsLevels := parseQPSLevels(qpsInput)
+			if len(newQpsLevels) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: At least one QPS level is required\n")
+				continue
+			}
+			qpsLevels = newQpsLevels
+
+			// Get new duration
+			durationInput := promptInput("Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: ", false)
+			if durationInput != "" {
+				parsedDuration, err := time.ParseDuration(durationInput)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Invalid duration format. Using previous duration: %v\n", duration)
+				} else {
+					duration = parsedDuration
+				}
+			}
+
+			// Ask if user wants to customize connection counts for new QPS levels
+			fmt.Println("\nConnection Configuration")
+			fmt.Println("========================")
+			fmt.Println("By default, connections are estimated using: (QPS × 75ms) / 1000 × 1.5")
+			fmt.Println("This is an educated guess based on Zilliz Cloud behavior - actual latency may vary.")
+			customize := promptInput("Customize connection counts for each QPS level? (yes/no) [default: no]: ", false)
+			customConnections = make(map[int]int)
+			
+			if strings.ToLower(strings.TrimSpace(customize)) == "yes" {
+				for _, qps := range qpsLevels {
+					defaultConnections, _ := calculateOptimalConnections(qps)
+					connInput := promptInput(fmt.Sprintf("Enter number of connections for %d QPS [default: %d]: ", qps, defaultConnections), false)
+					if connInput != "" {
+						connCount, err := strconv.Atoi(strings.TrimSpace(connInput))
+						if err != nil || connCount < 1 {
+							fmt.Printf("Warning: Invalid connection count '%s', using default %d\n", connInput, defaultConnections)
+							customConnections[qps] = defaultConnections
+						} else {
+							customConnections[qps] = connCount
+						}
+					} else {
+						customConnections[qps] = defaultConnections
+					}
+				}
+			}
+
+			fmt.Println() // Add spacing before next test
+			continue
+		case "3", "":
+			// Exit
+			fmt.Println("Exiting. Goodbye!")
+			return
+		default:
+			fmt.Printf("Invalid choice '%s'. Exiting.\n", choice)
+			return
+		}
 	}
 }
 
@@ -182,7 +286,7 @@ func parseQPSLevels(input string) []int {
 	return qpsLevels
 }
 
-func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, duration time.Duration, vectorDim int, metricType string) error {
+func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, duration time.Duration, vectorDim int, metricType string, customConnections map[int]int) error {
 	fmt.Printf("\n\nStarting Zilliz Cloud Load Test\n")
 	fmt.Printf("==============================\n")
 	fmt.Printf("Database URL: %s\n", databaseURL)
@@ -199,13 +303,21 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, durati
 	for _, qps := range qpsLevels {
 		fmt.Printf("\n--- Running test at %d QPS for %v ---\n", qps, duration)
 		
-		// Calculate optimal connections for this QPS level
-		optimalConnections, explanation := calculateOptimalConnections(qps)
-		fmt.Printf("Connection calculation: %s\n", explanation)
-		fmt.Printf("Initializing %d client connections...\n", optimalConnections)
+		// Get connection count (custom or calculated)
+		var connections int
+		var explanation string
+		if customConn, ok := customConnections[qps]; ok {
+			connections = customConn
+			explanation = fmt.Sprintf("Using %d connections (user-specified)", connections)
+		} else {
+			connections, explanation = calculateOptimalConnections(qps)
+		}
 		
-		// Initialize load tester with optimal connections for this QPS
-		tester, err := NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricType, optimalConnections)
+		fmt.Printf("Connection configuration: %s\n", explanation)
+		fmt.Printf("Initializing %d client connections...\n", connections)
+		
+		// Initialize load tester with connections for this QPS
+		tester, err := NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricType, connections)
 		if err != nil {
 			return fmt.Errorf("failed to initialize load tester: %w", err)
 		}
