@@ -129,7 +129,7 @@ func runLoadTestFlow() {
 	fmt.Println("This is an educated guess based on Zilliz Cloud behavior - actual latency may vary.")
 	customize := promptInput("Customize connection counts for each QPS level? (yes/no) [default: no]: ", false)
 	customConnections := make(map[int]int)
-	
+
 	if strings.ToLower(strings.TrimSpace(customize)) == "yes" {
 		for _, qps := range qpsLevels {
 			defaultConnections, _ := calculateOptimalConnections(qps)
@@ -201,7 +201,7 @@ func runLoadTestFlow() {
 			fmt.Println("This is an educated guess based on Zilliz Cloud behavior - actual latency may vary.")
 			customize := promptInput("Customize connection counts for each QPS level? (yes/no) [default: no]: ", false)
 			customConnections = make(map[int]int)
-			
+
 			if strings.ToLower(strings.TrimSpace(customize)) == "yes" {
 				for _, qps := range qpsLevels {
 					defaultConnections, _ := calculateOptimalConnections(qps)
@@ -302,7 +302,7 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, durati
 	var allResults []TestResult
 	for _, qps := range qpsLevels {
 		fmt.Printf("\n--- Running test at %d QPS for %v ---\n", qps, duration)
-		
+
 		// Get connection count (custom or calculated)
 		var connections int
 		var explanation string
@@ -312,10 +312,10 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, durati
 		} else {
 			connections, explanation = calculateOptimalConnections(qps)
 		}
-		
+
 		fmt.Printf("Connection configuration: %s\n", explanation)
 		fmt.Printf("Initializing %d client connections...\n", connections)
-		
+
 		// Initialize load tester with connections for this QPS
 		tester, err := NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricType, connections)
 		if err != nil {
