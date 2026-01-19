@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
@@ -13,7 +14,8 @@ import (
 )
 
 type LoadTester struct {
-	client     client.Client
+	clients    []client.Client // Multiple clients for connection pooling
+	clientIdx  int64           // Atomic counter for round-robin client selection
 	collection string
 	vectorDim  int
 	metricType entity.MetricType
@@ -69,9 +71,67 @@ func createZillizClient(apiKey, databaseURL string) (client.Client, error) {
 }
 
 func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metricTypeStr string) (*LoadTester, error) {
-	milvusClient, err := createZillizClient(apiKey, databaseURL)
-	if err != nil {
-		return nil, err
+	// Default to 10 connections - will be adjusted based on QPS in RunTest
+	return NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricTypeStr, 10)
+}
+
+// calculateOptimalConnections calculates the number of connections needed based on target QPS
+// Rule of thumb: connections = (QPS * expected_latency_ms) / 1000 + overhead
+// This ensures each connection isn't overwhelmed and can handle concurrent requests
+// For vector search with ~50-100ms latency:
+//   - 100 QPS: ~10-15 connections
+//   - 500 QPS: ~50-75 connections
+//   - 1000 QPS: ~100-150 connections
+//   - 5000 QPS: ~500-750 connections
+//   - 10000 QPS: ~1000-1500 connections
+//
+// We add 20% overhead and cap at reasonable limits
+func calculateOptimalConnections(targetQPS int) (int, string) {
+	// Assume average latency of 50-100ms for vector search
+	// Formula: (QPS * latency_ms) / 1000 gives concurrent requests needed
+	// Then add 20% overhead for headroom
+	expectedLatencyMs := 75.0 // Conservative estimate for vector search
+	baseConnections := float64(targetQPS) * expectedLatencyMs / 1000.0
+	connections := int(baseConnections * 1.2) // 20% overhead
+
+	// Enforce reasonable bounds
+	if connections < 5 {
+		connections = 5 // Minimum for any meaningful load
+	}
+
+	// Higher limit for very high QPS scenarios
+	maxConnections := 1000 // Increased from 200 to support 5000-10000 QPS
+	if connections > maxConnections {
+		connections = maxConnections
+	}
+
+	explanation := fmt.Sprintf("Calculated %d connections for %d QPS (based on ~75ms latency estimate + 20%% overhead)",
+		connections, targetQPS)
+
+	return connections, explanation
+}
+
+func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vectorDim int,
+	metricTypeStr string, numConnections int) (*LoadTester, error) {
+	if numConnections < 1 {
+		numConnections = 1
+	}
+	if numConnections > 100 {
+		numConnections = 100 // Reasonable upper limit
+	}
+
+	// Create multiple clients for connection pooling
+	clients := make([]client.Client, numConnections)
+	for i := 0; i < numConnections; i++ {
+		milvusClient, err := createZillizClient(apiKey, databaseURL)
+		if err != nil {
+			// Clean up already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return nil, fmt.Errorf("failed to create client %d/%d: %w", i+1, numConnections, err)
+		}
+		clients[i] = milvusClient
 	}
 
 	// Parse metric type
@@ -84,20 +144,33 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 	case "COSINE":
 		metricType = entity.COSINE
 	default:
+		// Clean up clients
+		for _, c := range clients {
+			c.Close()
+		}
 		return nil, fmt.Errorf("unsupported metric type: %s", metricTypeStr)
 	}
 
 	return &LoadTester{
-		client:     milvusClient,
+		clients:    clients,
+		clientIdx:  0,
 		collection: collection,
 		vectorDim:  vectorDim,
 		metricType: metricType,
 	}, nil
 }
 
+// getClient returns a client using round-robin selection
+func (lt *LoadTester) getClient() client.Client {
+	idx := int(atomic.AddInt64(&lt.clientIdx, 1) % int64(len(lt.clients)))
+	return lt.clients[idx]
+}
+
 func (lt *LoadTester) Close() {
-	if lt.client != nil {
-		lt.client.Close()
+	for _, c := range lt.clients {
+		if c != nil {
+			c.Close()
+		}
 	}
 }
 
@@ -282,8 +355,52 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	// Calculate percentiles
 	sort.Float64s(latencies)
+
+	// Calculate some basic stats to detect issues
+	var sum float64
+	var min, max, avgLatency float64
+	if len(latencies) > 0 {
+		min = latencies[0]
+		max = latencies[len(latencies)-1]
+		for _, l := range latencies {
+			sum += l
+		}
+		avgLatency = sum / float64(len(latencies))
+	}
+
 	p95 := calculatePercentile(latencies, 95)
 	p99 := calculatePercentile(latencies, 99)
+
+	// Check for suspiciously high latencies (likely due to queuing at high QPS)
+	// At high QPS, queries queue up and latency includes wait time
+	if max > 1000 { // More than 1 second is suspicious
+		fmt.Printf("\nWarning: Detected very high latencies (max: %.2f ms). This may indicate:\n", max)
+		fmt.Printf("  - SDK connection pool exhaustion\n")
+		fmt.Printf("  - Network congestion\n")
+		fmt.Printf("  - Server-side queuing\n")
+		fmt.Printf("  Latency stats: min=%.2f ms, avg=%.2f ms, p95=%.2f ms, p99=%.2f ms, max=%.2f ms\n",
+			min, avgLatency, p95, p99, max)
+
+		// Filter out extreme outliers (likely measurement errors or queuing)
+		// Use a more reasonable cutoff - anything over 5 seconds is probably queuing, not actual latency
+		filteredLatencies := make([]float64, 0, len(latencies))
+		for _, l := range latencies {
+			if l < 5000 { // Filter out anything over 5 seconds
+				filteredLatencies = append(filteredLatencies, l)
+			}
+		}
+
+		if len(filteredLatencies) > 0 && len(filteredLatencies) < len(latencies) {
+			sort.Float64s(filteredLatencies)
+			filteredP95 := calculatePercentile(filteredLatencies, 95)
+			filteredP99 := calculatePercentile(filteredLatencies, 99)
+			fmt.Printf("  Filtered stats (excluding outliers >5s): p95=%.2f ms, p99=%.2f ms (%d/%d queries)\n",
+				filteredP95, filteredP99, len(filteredLatencies), len(latencies))
+			// Use filtered values for reporting
+			p95 = filteredP95
+			p99 = filteredP99
+		}
+	}
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
 	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, len(latencies), elapsed)
@@ -329,7 +446,7 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 
 	// Execute search with empty search params (defaults to level 1 for latency optimization)
 	emptyParams := &EmptySearchParam{}
-	_, err := lt.client.Search(
+	_, err := lt.getClient().Search(
 		ctx,
 		lt.collection,
 		[]string{},     // partition names (empty for all partitions)

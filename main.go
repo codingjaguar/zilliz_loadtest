@@ -194,25 +194,30 @@ func runLoadTest(apiKey, databaseURL, collection string, qpsLevels []int, durati
 
 	ctx := context.Background()
 
-	// Initialize load tester
-	tester, err := NewLoadTester(apiKey, databaseURL, collection, vectorDim, metricType)
-	if err != nil {
-		return fmt.Errorf("failed to initialize load tester: %w", err)
-	}
-	defer tester.Close()
-
 	// Run tests for each QPS level
 	var allResults []TestResult
 	for _, qps := range qpsLevels {
 		fmt.Printf("\n--- Running test at %d QPS for %v ---\n", qps, duration)
-
+		
+		// Calculate optimal connections for this QPS level
+		optimalConnections, explanation := calculateOptimalConnections(qps)
+		fmt.Printf("Connection calculation: %s\n", explanation)
+		fmt.Printf("Initializing %d client connections...\n", optimalConnections)
+		
+		// Initialize load tester with optimal connections for this QPS
+		tester, err := NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricType, optimalConnections)
+		if err != nil {
+			return fmt.Errorf("failed to initialize load tester: %w", err)
+		}
 		result, err := tester.RunTest(ctx, qps, duration)
 		if err != nil {
 			fmt.Printf("Error running test at %d QPS: %v\n", qps, err)
+			tester.Close()
 			continue
 		}
 
 		allResults = append(allResults, result)
+		tester.Close() // Close after each test to free connections
 	}
 
 	// Display results
