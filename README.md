@@ -27,15 +27,30 @@ A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configur
 
 ```bash
 go mod download
-go build -o zilliz-loadtest
+go build -o zilliz-loadtest ./cmd/zilliz-loadtest
 ```
 
 ## Quick Start
 
-1. **Create a configuration file** (optional but recommended):
+1. **Create a configuration file** (recommended for easier use):
+   
+   The tool will automatically look for config files in these locations (in order):
+   - `./config.yaml` (current directory)
+   - `./configs/config.yaml` (configs subdirectory)
+   - `./zilliz-loadtest.yaml` (current directory)
+   - `~/.zilliz-loadtest.yaml` (home directory)
+   
+   **Recommended approach:**
    ```bash
-   cp config.yaml.example config.yaml
-   # Edit config.yaml with your API key and database URL
+   # Copy the example config to one of the supported locations
+   cp configs/config.yaml.example configs/config.yaml
+   # OR
+   cp configs/config.yaml.example ./config.yaml
+   # OR
+   cp configs/config.yaml.example ~/.zilliz-loadtest.yaml
+   
+   # Edit the config file with your API key and database URL
+   # Note: config.yaml is in .gitignore for security - it contains sensitive credentials
    ```
 
 2. **Or use environment variables**:
@@ -43,22 +58,56 @@ go build -o zilliz-loadtest
    export ZILLIZ_API_KEY="your-api-key"
    export ZILLIZ_DB_URL="https://your-cluster.zillizcloud.com"
    ```
+   
+   Environment variables override config file values.
 
 3. **Run the tool**:
    ```bash
    ./zilliz-loadtest
    ```
+   
+   If you have a config file, the tool will automatically use all values from it (API key, database URL, collection, vector dimension, metric type, QPS levels, duration, etc.) without prompting.
 
    Or use command-line flags for non-interactive mode:
    ```bash
    ./zilliz-loadtest --load-test --api-key KEY --database-url URL --collection COLL --qps 100,500 --duration 30s
+   ```
+   
+   You can also specify a custom config path:
+   ```bash
+   ./zilliz-loadtest --config /path/to/config.yaml
    ```
 
 ## Configuration
 
 ### Configuration File
 
-Create a `config.yaml` file in the current directory or `~/.zilliz-loadtest.yaml`. See `config.yaml.example` for a template.
+**Important:** Configuration files contain sensitive credentials (API keys, database URLs) and are automatically excluded from git via `.gitignore`. Never commit your `config.yaml` file to version control.
+
+The tool automatically searches for configuration files in the following locations (in order of priority):
+
+1. `./config.yaml` - Current working directory
+2. `./configs/config.yaml` - Configs subdirectory (recommended for project-specific configs)
+3. `./zilliz-loadtest.yaml` - Current working directory (alternative name)
+4. `~/.zilliz-loadtest.yaml` - Home directory (recommended for user-wide configs)
+
+**To create your config file:**
+
+```bash
+# Option 1: In the configs subdirectory (recommended for project-specific configs)
+cp configs/config.yaml.example configs/config.yaml
+# Edit configs/config.yaml with your credentials
+
+# Option 2: In the current directory
+cp configs/config.yaml.example ./config.yaml
+# Edit config.yaml with your credentials
+
+# Option 3: In your home directory (recommended for user-wide configs)
+cp configs/config.yaml.example ~/.zilliz-loadtest.yaml
+# Edit ~/.zilliz-loadtest.yaml with your credentials
+```
+
+**Note:** The example config file (`configs/config.yaml.example`) is safe to commit to git as it contains no real credentials. Your actual `config.yaml` file is automatically ignored by git.
 
 **Example config.yaml:**
 ```yaml

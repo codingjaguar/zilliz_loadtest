@@ -76,6 +76,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		homeDir, _ := os.UserHomeDir()
 		defaultPaths := []string{
 			"./config.yaml",
+			"./configs/config.yaml",
 			"./zilliz-loadtest.yaml",
 			filepath.Join(homeDir, ".zilliz-loadtest.yaml"),
 		}

@@ -28,3 +28,18 @@ go.work
 # OS
 .DS_Store
 Thumbs.db
+
+# Configuration files with sensitive data (API keys, database URLs)
+# Ignore actual config files but allow example files
+config.yaml
+zilliz-loadtest.yaml
+configs/config.yaml
+~/.zilliz-loadtest.yaml
+
+# Results and output files
+*_results_*.json
+*_results_*.csv
+*.pprof
+*.prom
+timeseries_*.csv
+metrics_*.prom
