@@ -12,9 +12,6 @@ import (
 )
 
 func TestSeedDatabase_Validation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	tests := []struct {
 		name        string
 		apiKey      string
@@ -36,12 +33,17 @@ func TestSeedDatabase_Validation(t *testing.T) {
 		{"zero batch size", "key", "url", "coll", 768, 1000, 0, true, "batch size"},
 		{"negative batch size", "key", "url", "coll", 768, 1000, -1, true, "batch size"},
 		{"batch size too large", "key", "url", "coll", 768, 1000, 50001, true, "batch size too large"},
-		// Skip "valid inputs" test as it would try to create real client connection
+		// Note: We don't test "valid inputs" here as it would try to create real client connection
+		// Valid input testing should be done in integration tests with proper setup
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Use a context with timeout to prevent hanging
+			// All these tests should fail validation immediately without creating clients
+			// Use a short timeout to ensure we don't hang on client creation attempts
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+
 			done := make(chan error, 1)
 			go func() {
 				done <- SeedDatabaseWithBatchSize(tt.apiKey, tt.databaseURL, tt.collection, tt.vectorDim, tt.totalVectors, tt.batchSize)
@@ -59,10 +61,10 @@ func TestSeedDatabase_Validation(t *testing.T) {
 					}
 				}
 			case <-ctx.Done():
-				if !tt.wantErr {
-					t.Fatal("Test timed out - this should not happen for validation tests")
-				}
-				// For validation errors, timeout is acceptable as client creation will fail
+				// If we timeout, it means the function tried to create a client
+				// This should only happen if validation passed but client creation failed
+				// For our test cases, validation should fail first, so timeout indicates a problem
+				t.Errorf("Test timed out - SeedDatabaseWithBatchSize() should fail validation immediately for %q", tt.name)
 			}
 		})
 	}
