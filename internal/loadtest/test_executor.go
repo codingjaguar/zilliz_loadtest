@@ -2,10 +2,11 @@ package loadtest
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"zilliz-loadtest/internal/logger"
 )
 
 // testState tracks the state of a running test
@@ -47,8 +48,11 @@ func (ts *testState) startStatusReporter(testCtx context.Context) {
 				elapsed := time.Since(ts.startTime)
 				if elapsed.Seconds() > 0 {
 					currentQPS := float64(completed) / elapsed.Seconds()
-					fmt.Printf("[Status] Elapsed: %v | Fired: %d | Completed: %d | Current QPS: %.2f\n",
-						elapsed.Round(time.Second), fired, completed, currentQPS)
+					logger.Info("Test status",
+						"elapsed_seconds", elapsed.Round(time.Second).Seconds(),
+						"queries_fired", fired,
+						"queries_completed", completed,
+						"current_qps", currentQPS)
 				}
 			}
 		}
@@ -58,7 +62,7 @@ func (ts *testState) startStatusReporter(testCtx context.Context) {
 // startQueryFirer starts a goroutine that fires queries at the target QPS
 func (lt *LoadTester) startQueryFirer(testCtx, queryCtx context.Context, interval time.Duration, ts *testState, wg *sync.WaitGroup) {
 	ticker := time.NewTicker(interval)
-	
+
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -109,7 +113,7 @@ func (ts *testState) waitForCompletion(wg *sync.WaitGroup, waitTimeout time.Dura
 				return
 			case <-progressTicker.C:
 				completed := atomic.LoadInt64(&ts.queriesCompleted)
-				fmt.Printf("  Waiting... %d queries completed so far\n", completed)
+				logger.Info("Waiting for queries to complete", "completed", completed)
 			}
 		}
 	}()
@@ -117,10 +121,12 @@ func (ts *testState) waitForCompletion(wg *sync.WaitGroup, waitTimeout time.Dura
 	select {
 	case <-done:
 		close(progressDone)
-		fmt.Printf("All queries completed\n")
+		logger.Info("All queries completed")
 	case <-time.After(waitTimeout):
 		close(progressDone)
-		fmt.Printf("Warning: Timed out waiting for queries after %v. Some queries may still be running\n", waitTimeout)
+		logger.Warn("Timed out waiting for queries",
+			"timeout", waitTimeout,
+			"message", "Some queries may still be running")
 		time.Sleep(GracePeriodAfterClose)
 	}
 }

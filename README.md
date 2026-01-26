@@ -4,7 +4,7 @@ A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configur
 
 ## Features
 
-- **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the insert API
+- **Database Seeding**: Seed your database with configurable vector counts, dimensions, and batch sizes
 - **Pre-flight Validation**: Automatic collection validation before tests (existence, schema, data, indexes)
 - **Enhanced Metrics**: P50, P90, P95, P99 latencies, min/max/avg, error categorization, success rates
 - **Configurable QPS Levels**: Test multiple QPS levels in a single run (default: 100, 500, 1000 QPS)
@@ -15,6 +15,13 @@ A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configur
 - **Configuration File Support**: YAML config file with environment variable overrides
 - **Configurable Search Parameters**: Customize topK, filter expressions, search level, and output fields
 - **Comprehensive Reporting**: Detailed results summary with error breakdowns
+- **Command-Line Interface**: Non-interactive mode with flags for automation and scripting
+- **Structured Logging**: JSON or text format logging with configurable levels
+- **Metrics Export**: Prometheus format and time-series CSV export
+- **Profiling Support**: CPU and memory profiling for performance analysis
+- **Retry Logic**: Automatic retry for transient errors with exponential backoff
+- **Input Validation**: Comprehensive validation with clear error messages
+- **Test Comparison**: Compare multiple test runs to identify improvements/regressions
 
 ## Installation
 
@@ -40,6 +47,11 @@ go build -o zilliz-loadtest
 3. **Run the tool**:
    ```bash
    ./zilliz-loadtest
+   ```
+
+   Or use command-line flags for non-interactive mode:
+   ```bash
+   ./zilliz-loadtest --load-test --api-key KEY --database-url URL --collection COLL --qps 100,500 --duration 30s
    ```
 
 ## Configuration
@@ -72,6 +84,30 @@ output_fields: ["id"]
 - `ZILLIZ_DB_URL`: Your Zilliz Cloud database URL
 
 Environment variables override config file values.
+
+### Command-Line Flags
+
+The tool supports both interactive and non-interactive modes. Use flags for automation:
+
+**Seed Operation:**
+```bash
+./zilliz-loadtest --seed --api-key KEY --database-url URL --collection COLL \
+  --seed-vector-count 2000000 --seed-vector-dim 768 --seed-batch-size 15000
+```
+
+**Load Test:**
+```bash
+./zilliz-loadtest --load-test --api-key KEY --database-url URL --collection COLL \
+  --qps 100,500,1000 --duration 30s --vector-dim 768 --metric-type L2 \
+  --warmup 100 --output json --output-path results
+```
+
+**Profiling:**
+```bash
+./zilliz-loadtest --load-test ... --cpu-profile cpu.pprof --mem-profile mem.pprof
+```
+
+Run `./zilliz-loadtest --help` for complete flag documentation.
 
 ## Usage
 
@@ -273,15 +309,76 @@ The tool automatically calculates the optimal number of connections based on:
 
 ```
 zilliz-loadtest/
-├── main.go              # CLI interface and orchestration
-├── loadtest.go          # Core load testing logic
-├── validation.go        # Pre-flight validation
-├── config.go            # Configuration management
-├── export.go            # Result export functionality
-├── config.yaml.example  # Example configuration file
+├── cmd/zilliz-loadtest/
+│   ├── main.go          # CLI interface and orchestration
+│   ├── flags.go         # Command-line flag parsing
+│   ├── helpers.go       # Helper functions
+│   └── compare.go       # Test result comparison
+├── internal/
+│   ├── loadtest/        # Core load testing logic
+│   │   ├── loadtest.go
+│   │   ├── constants.go
+│   │   ├── warmup.go
+│   │   ├── test_executor.go
+│   │   ├── result_processor.go
+│   │   ├── seed.go
+│   │   └── retry.go
+│   ├── config/          # Configuration management
+│   ├── export/          # Result export functionality
+│   ├── validation/      # Pre-flight validation and input validation
+│   ├── logger/          # Structured logging
+│   ├── metrics/         # Metrics collection and export
+│   ├── profiling/       # CPU/memory profiling
+│   └── errors/          # Custom error types
+├── configs/
+│   └── config.yaml.example  # Example configuration file
 ├── go.mod               # Go dependencies
 └── README.md            # This file
 ```
+
+## Advanced Features
+
+### Structured Logging
+
+The tool uses structured logging with configurable levels and formats:
+
+- **Log Levels**: DEBUG, INFO, WARN, ERROR
+- **Formats**: text (human-readable) or json (machine-readable)
+- **Configuration**: Set via config file or environment variables
+
+### Metrics Export
+
+Export metrics in multiple formats:
+- **Prometheus**: For integration with Prometheus/Grafana
+- **Time-series CSV**: For analysis in spreadsheets or custom tools
+
+### Profiling
+
+Enable CPU and memory profiling to identify performance bottlenecks:
+```bash
+./zilliz-loadtest --load-test ... --cpu-profile cpu.pprof --mem-profile mem.pprof
+```
+
+Analyze with `go tool pprof`:
+```bash
+go tool pprof cpu.pprof
+go tool pprof mem.pprof
+```
+
+### Test Comparison
+
+Compare multiple test runs to track performance changes:
+```go
+// Programmatic usage
+compare.CompareResultsFromFiles("baseline.json", "comparison.json")
+```
+
+### Retry Logic
+
+Automatic retry for transient errors:
+- Network errors
+- Timeout errors
+- Configurable retry count and backoff strategy
 
 ## Contributing
 

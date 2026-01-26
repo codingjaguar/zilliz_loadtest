@@ -5,13 +5,17 @@ import (
 	"testing"
 	"time"
 
+	"zilliz-loadtest/internal/mocks"
+
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
-	"zilliz-loadtest/internal/mocks"
 )
 
 // Test RunTest integration scenarios
 func TestLoadTesterRunTestShort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	searchCallCount := 0
 	mockClient := &mocks.MockClient{
 		SearchFunc: func(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error) {
@@ -22,10 +26,7 @@ func TestLoadTesterRunTestShort(t *testing.T) {
 
 	lt := createTestLoadTester([]client.Client{mockClient}, "test", 768, entity.L2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	result, err := lt.RunTest(ctx, 100, 100*time.Millisecond, 0)
+	result, err := lt.RunTest(ctx, 100, 2*time.Second, 0)
 
 	if err != nil {
 		t.Errorf("RunTest() error = %v", err)
@@ -42,6 +43,9 @@ func TestLoadTesterRunTestShort(t *testing.T) {
 }
 
 func TestLoadTesterRunTestWithWarmup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	searchCallCount := 0
 	mockClient := &mocks.MockClient{
 		SearchFunc: func(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error) {
@@ -52,10 +56,7 @@ func TestLoadTesterRunTestWithWarmup(t *testing.T) {
 
 	lt := createTestLoadTester([]client.Client{mockClient}, "test", 768, entity.L2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := lt.RunTest(ctx, 100, 50*time.Millisecond, 5)
+	_, err := lt.RunTest(ctx, 100, 2*time.Second, 5)
 
 	if err != nil {
 		t.Errorf("RunTest() error = %v", err)
@@ -67,6 +68,9 @@ func TestLoadTesterRunTestWithWarmup(t *testing.T) {
 }
 
 func TestLoadTesterRunTestWithErrors(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	errorCount := 0
 	mockClient := &mocks.MockClient{
 		SearchFunc: func(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error) {
@@ -80,10 +84,7 @@ func TestLoadTesterRunTestWithErrors(t *testing.T) {
 
 	lt := createTestLoadTester([]client.Client{mockClient}, "test", 768, entity.L2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	result, err := lt.RunTest(ctx, 100, 50*time.Millisecond, 0)
+	result, err := lt.RunTest(ctx, 100, 2*time.Second, 0)
 
 	if err != nil {
 		t.Errorf("RunTest() error = %v", err)
@@ -99,6 +100,9 @@ func TestLoadTesterRunTestWithErrors(t *testing.T) {
 }
 
 func TestLoadTesterRunTestWithNoResults(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	errorCount := 0
 	mockClient := &mocks.MockClient{
 		SearchFunc: func(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error) {
@@ -109,13 +113,11 @@ func TestLoadTesterRunTestWithNoResults(t *testing.T) {
 
 	lt := createTestLoadTester([]client.Client{mockClient}, "test", 768, entity.L2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	result, err := lt.RunTest(ctx, 100, 2*time.Second, 0)
 
-	result, err := lt.RunTest(ctx, 100, 50*time.Millisecond, 0)
-
+	// All queries failed is a valid test outcome, no error should be returned
 	if err != nil {
-		t.Errorf("RunTest() error = %v", err)
+		t.Errorf("RunTest() error = %v (expected nil when all queries fail)", err)
 	}
 
 	if result.Errors == 0 {
@@ -128,21 +130,26 @@ func TestLoadTesterRunTestWithNoResults(t *testing.T) {
 }
 
 func TestLoadTesterRunTestWithFilteredLatencies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	callCount := 0
 	mockClient := &mocks.MockClient{
 		SearchFunc: func(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error) {
 			callCount++
-			time.Sleep(1100 * time.Millisecond) // > 1 second
+			// Use context-aware sleep
+			select {
+			case <-time.After(1100 * time.Millisecond): // > 1 second
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			return []client.SearchResult{}, nil
 		},
 	}
 
 	lt := createTestLoadTester([]client.Client{mockClient}, "test", 768, entity.L2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	result, err := lt.RunTest(ctx, 10, 200*time.Millisecond, 0)
+	result, err := lt.RunTest(ctx, 10, 2*time.Second, 0)
 
 	if err != nil {
 		t.Errorf("RunTest() error = %v", err)

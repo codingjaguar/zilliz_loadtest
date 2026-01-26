@@ -11,36 +11,64 @@ import (
 
 // Config holds the configuration for the load test tool
 type Config struct {
-	APIKey              string        `yaml:"api_key"`
-	DatabaseURL         string        `yaml:"database_url"`
-	DefaultCollection   string        `yaml:"default_collection"`
-	DefaultVectorDim    int           `yaml:"default_vector_dim"`
-	DefaultMetricType   string        `yaml:"default_metric_type"`
-	DefaultDuration     string        `yaml:"default_duration"`
-	DefaultQPSLevels    []int         `yaml:"default_qps_levels"`
-	ConnectionMultiplier float64      `yaml:"connection_multiplier"`
-	ExpectedLatencyMs   float64       `yaml:"expected_latency_ms"`
-	WarmupQueries       int           `yaml:"warmup_queries"`
-	TopK                int           `yaml:"top_k"`
-	SearchLevel         int           `yaml:"search_level"`
-	FilterExpression    string        `yaml:"filter_expression"`
-	OutputFields        []string      `yaml:"output_fields"`
+	APIKey               string   `yaml:"api_key"`
+	DatabaseURL          string   `yaml:"database_url"`
+	DefaultCollection    string   `yaml:"default_collection"`
+	DefaultVectorDim     int      `yaml:"default_vector_dim"`
+	DefaultMetricType    string   `yaml:"default_metric_type"`
+	DefaultDuration      string   `yaml:"default_duration"`
+	DefaultQPSLevels     []int    `yaml:"default_qps_levels"`
+	ConnectionMultiplier float64  `yaml:"connection_multiplier"`
+	ExpectedLatencyMs    float64  `yaml:"expected_latency_ms"`
+	WarmupQueries        int      `yaml:"warmup_queries"`
+	TopK                 int      `yaml:"top_k"`
+	SearchLevel          int      `yaml:"search_level"`
+	FilterExpression     string   `yaml:"filter_expression"`
+	OutputFields         []string `yaml:"output_fields"`
+
+	// Seed parameters
+	SeedVectorCount int `yaml:"seed_vector_count"`
+	SeedVectorDim   int `yaml:"seed_vector_dim"`
+	SeedBatchSize   int `yaml:"seed_batch_size"`
+
+	// Logging and observability
+	LogLevel        string `yaml:"log_level"`
+	LogFormat       string `yaml:"log_format"`
+	MetricsEnabled  bool   `yaml:"metrics_enabled"`
+	MetricsPort     int    `yaml:"metrics_port"`
+	OutputDirectory string `yaml:"output_directory"`
+	MaxRetries      int    `yaml:"max_retries"`
+	Timeout         string `yaml:"timeout"`
 }
 
 // LoadConfig loads configuration from file, environment variables, or returns defaults
 func LoadConfig(configPath string) (*Config, error) {
 	config := &Config{
-		DefaultVectorDim:    768,
-		DefaultMetricType:   "L2",
-		DefaultDuration:     "30s",
-		DefaultQPSLevels:    []int{100, 500, 1000},
+		DefaultVectorDim:     768,
+		DefaultMetricType:    "L2",
+		DefaultDuration:      "30s",
+		DefaultQPSLevels:     []int{100, 500, 1000},
 		ConnectionMultiplier: 1.5,
-		ExpectedLatencyMs:   75.0,
-		WarmupQueries:       100,
-		TopK:                10,
-		SearchLevel:         1,
-		OutputFields:        []string{"id"},
+		ExpectedLatencyMs:    75.0,
+		WarmupQueries:        100,
+		TopK:                 10,
+		SearchLevel:          1,
+		OutputFields:         []string{"id"},
 	}
+
+	// Set seed defaults
+	config.SeedVectorCount = 2000000
+	config.SeedVectorDim = 768
+	config.SeedBatchSize = 15000
+
+	// Set logging defaults
+	config.LogLevel = "INFO"
+	config.LogFormat = "text"
+	config.MetricsEnabled = false
+	config.MetricsPort = 9090
+	config.OutputDirectory = ""
+	config.MaxRetries = 3
+	config.Timeout = "30s"
 
 	// Try to load from config file
 	if configPath == "" {

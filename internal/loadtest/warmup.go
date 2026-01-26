@@ -2,7 +2,8 @@ package loadtest
 
 import (
 	"context"
-	"fmt"
+
+	"zilliz-loadtest/internal/logger"
 )
 
 // runWarmup executes warmup queries to prepare connections and caches
@@ -11,18 +12,22 @@ func (lt *LoadTester) runWarmup(ctx context.Context, warmupQueries int) {
 		return
 	}
 
-	fmt.Printf("Warming up with %d queries...\n", warmupQueries)
+	logger.Info("Starting warmup", "queries", warmupQueries)
 	warmupCtx, warmupCancel := context.WithTimeout(ctx, WarmupTimeout)
 	defer warmupCancel()
 
 	for i := 0; i < warmupQueries; i++ {
 		result := lt.executeQuery(warmupCtx, i)
 		if result.Error != nil && i < 5 {
-			fmt.Printf("  Warmup query %d error: %v\n", i+1, result.Error)
+			logger.Warn("Warmup query error",
+				"query_num", i+1,
+				"error", result.Error.Error())
 		}
 		if (i+1)%10 == 0 {
-			fmt.Printf("  Warmup progress: %d/%d queries\n", i+1, warmupQueries)
+			logger.Debug("Warmup progress",
+				"completed", i+1,
+				"total", warmupQueries)
 		}
 	}
-	fmt.Printf("Warmup complete\n\n")
+	logger.Info("Warmup complete")
 }

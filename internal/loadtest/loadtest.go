@@ -11,6 +11,7 @@ import (
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
+	"zilliz-loadtest/internal/logger"
 )
 
 type LoadTester struct {
@@ -61,6 +62,13 @@ type QueryResult struct {
 func CreateZillizClient(apiKey, databaseURL string) (client.Client, error) {
 	ctx := context.Background()
 
+	if apiKey == "" {
+		return nil, fmt.Errorf("API key is required but was empty")
+	}
+	if databaseURL == "" {
+		return nil, fmt.Errorf("database URL is required but was empty")
+	}
+
 	// Try the newer client.NewClient approach first
 	milvusClient, err := client.NewClient(
 		ctx,
@@ -75,7 +83,7 @@ func CreateZillizClient(apiKey, databaseURL string) (client.Client, error) {
 	if err != nil {
 		milvusClient, err = client.NewGrpcClient(ctx, databaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create client: %w", err)
+			return nil, fmt.Errorf("failed to create client: tried both NewClient and NewGrpcClient, last error: %w. Ensure the database URL is correct and accessible", err)
 		}
 		// Try SetToken method (common in Zilliz Cloud SDK)
 		if tokenClient, ok := milvusClient.(interface{ SetToken(string) error }); ok {
@@ -145,23 +153,40 @@ func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vector
 
 func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim int,
 	metricTypeStr string, numConnections int, topK int, filterExpr string, outputFields []string, searchLevel int) (*LoadTester, error) {
+	// Validate inputs
+	if apiKey == "" {
+		return nil, fmt.Errorf("API key is required but was empty")
+	}
+	if databaseURL == "" {
+		return nil, fmt.Errorf("database URL is required but was empty")
+	}
+	if collection == "" {
+		return nil, fmt.Errorf("collection name is required but was empty")
+	}
+	if vectorDim <= 0 {
+		return nil, fmt.Errorf("vector dimension must be positive, got %d", vectorDim)
+	}
 	if numConnections < 1 {
-		numConnections = 1
+		return nil, fmt.Errorf("number of connections must be at least 1, got %d", numConnections)
 	}
 	if numConnections > 100 {
-		numConnections = 100 // Reasonable upper limit
+		return nil, fmt.Errorf("number of connections exceeds maximum of 100, got %d. Consider using connection pooling instead", numConnections)
 	}
 
-	// Create multiple clients for connection pooling
+	// Create multiple clients for connection pooling with retry
 	clients := make([]client.Client, numConnections)
+	retryConfig := DefaultRetryConfig()
+	retryConfig.MaxRetries = 2 // Fewer retries for connection creation
+	
+	ctx := context.Background()
 	for i := 0; i < numConnections; i++ {
-		milvusClient, err := CreateZillizClient(apiKey, databaseURL)
+		milvusClient, err := RetryClientCreation(ctx, apiKey, databaseURL, retryConfig)
 		if err != nil {
 			// Clean up already created clients
 			for j := 0; j < i; j++ {
 				clients[j].Close()
 			}
-			return nil, fmt.Errorf("failed to create client %d/%d: %w", i+1, numConnections, err)
+			return nil, fmt.Errorf("failed to create client %d/%d after retries: %w. Check API key, database URL, and network connectivity", i+1, numConnections, err)
 		}
 		clients[i] = milvusClient
 	}
@@ -180,7 +205,7 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 		for _, c := range clients {
 			c.Close()
 		}
-		return nil, fmt.Errorf("unsupported metric type: %s", metricTypeStr)
+		return nil, fmt.Errorf("unsupported metric type: %s. Supported types are: L2, IP, COSINE", metricTypeStr)
 	}
 
 	// Set defaults
@@ -222,11 +247,25 @@ func (lt *LoadTester) Close() {
 }
 
 func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration, warmupQueries int) (TestResult, error) {
+	// Validate inputs
+	if targetQPS <= 0 {
+		return TestResult{}, fmt.Errorf("target QPS must be positive, got %d", targetQPS)
+	}
+	if duration <= 0 {
+		return TestResult{}, fmt.Errorf("duration must be positive, got %v", duration)
+	}
+	if duration < 1*time.Second {
+		return TestResult{}, fmt.Errorf("duration too short: %v (minimum: 1s). Tests shorter than 1 second may not provide accurate results", duration)
+	}
+
 	// Warm-up phase
 	lt.runWarmup(ctx, warmupQueries)
 
 	// Setup test execution
 	interval := time.Second / time.Duration(targetQPS)
+	if interval <= 0 {
+		return TestResult{}, fmt.Errorf("calculated interval is invalid for QPS %d", targetQPS)
+	}
 	testCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 
@@ -255,7 +294,10 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	completedDuringTest := int(atomic.LoadInt64(&ts.queriesCompleted))
 
 	inFlight := totalFired - completedDuringTest
-	fmt.Printf("\nTest duration ended. Waiting for %d in-flight queries to complete...\n", inFlight)
+	logger.Info("Test duration ended, waiting for in-flight queries",
+		"in_flight", inFlight,
+		"total_fired", totalFired,
+		"completed", completedDuringTest)
 
 	// Wait for completion
 	waitTimeout := calculateWaitTimeout(duration)
@@ -275,8 +317,42 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	// Process results
 	stats := processQueryResults(allResults)
 
+	// Handle edge case: no results at all
+	if len(allResults) == 0 {
+		logger.Warn("No query results collected",
+			"total_fired", totalFired,
+			"message", "This may indicate a configuration issue or all queries were cancelled")
+		return TestResult{
+			QPS:            targetQPS,
+			TotalQueries:   0,
+			Errors:         0,
+			ErrorBreakdown: make(map[ErrorType]int),
+			SuccessRate:    0,
+		}, fmt.Errorf("no queries completed - check configuration and network connectivity")
+	}
+
+	// Handle edge case: all queries failed
 	if len(stats.latencies) == 0 && stats.firstError != nil {
-		fmt.Printf("ERROR: All queries failed. First error: %v\n", stats.firstError)
+		logger.Error("All queries failed",
+			"first_error", stats.firstError.Error(),
+			"total_queries", len(allResults),
+			"errors", stats.errors)
+		// Return result with errors but don't return error - this is a valid test outcome
+		return TestResult{
+			QPS:            targetQPS,
+			TotalQueries:   0,
+			Errors:         stats.errors,
+			ErrorBreakdown: stats.errorBreakdown,
+			SuccessRate:    0,
+		}, nil
+	}
+
+	// Handle edge case: very few successful queries
+	if len(stats.latencies) < 10 && len(allResults) >= 10 {
+		logger.Warn("Very few successful queries",
+			"successful", len(stats.latencies),
+			"total", len(allResults),
+			"message", "Results may not be statistically significant")
 	}
 
 	min, max, avgLatency, p50, p90, p95, p99 := calculateLatencyStats(stats.latencies)

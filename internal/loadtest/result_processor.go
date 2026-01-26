@@ -1,9 +1,10 @@
 package loadtest
 
 import (
-	"fmt"
 	"sort"
 	"time"
+
+	"zilliz-loadtest/internal/logger"
 )
 
 // processResults processes query results and calculates statistics
@@ -83,12 +84,13 @@ func reportHighLatencyWarning(min, max, avg, p95, p99 float64, latencies []float
 		return adjustedP95, adjustedP99, shouldFilter
 	}
 
-	fmt.Printf("\nWarning: Detected very high latencies (max: %.2f ms). This may indicate:\n", max)
-	fmt.Printf("  - Server-side queuing (queries waiting for server capacity)\n")
-	fmt.Printf("  - Network congestion\n")
-	fmt.Printf("  - Note: These latencies include queue time, not just API response time\n")
-	fmt.Printf("  Latency stats: min=%.2f ms, avg=%.2f ms, p95=%.2f ms, p99=%.2f ms, max=%.2f ms\n",
-		min, avg, p95, p99, max)
+	logger.Warn("Detected very high latencies",
+		"max_latency_ms", max,
+		"min_latency_ms", min,
+		"avg_latency_ms", avg,
+		"p95_latency_ms", p95,
+		"p99_latency_ms", p99,
+		"message", "This may indicate server-side queuing or network congestion")
 
 	filteredLatencies, queuedCount := filterHighLatencies(latencies, HighLatencyThresholdMs)
 
@@ -98,12 +100,15 @@ func reportHighLatencyWarning(min, max, avg, p95, p99 float64, latencies []float
 		adjustedP99 = calculatePercentile(filteredLatencies, 99)
 		shouldFilter = true
 
-		fmt.Printf("  Filtered stats (excluding queued queries >1s): p95=%.2f ms, p99=%.2f ms\n",
-			adjustedP95, adjustedP99)
-		fmt.Printf("  %d queries (%.1f%%) had latencies >1s, likely due to server-side queuing\n",
-			queuedCount, float64(queuedCount)/float64(len(latencies))*100)
+		logger.Info("Filtered latency stats",
+			"p95_latency_ms", adjustedP95,
+			"p99_latency_ms", adjustedP99,
+			"queued_queries", queuedCount,
+			"queued_percent", float64(queuedCount)/float64(len(latencies))*100,
+			"message", "Excluding queued queries >1s")
 	} else if len(filteredLatencies) == 0 {
-		fmt.Printf("  ⚠️  All queries had latencies >1s - severe server-side bottleneck detected\n")
+		logger.Warn("All queries had latencies >1s",
+			"message", "Severe server-side bottleneck detected")
 	}
 
 	return adjustedP95, adjustedP99, shouldFilter
@@ -115,29 +120,42 @@ func reportTestSummary(targetQPS, totalFired, completed int, errors int, errorBr
 	completionRate := (actualQPS / float64(targetQPS)) * 100.0
 	successRate := float64(completed) / float64(totalFired) * 100.0
 
-	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, completed, elapsed)
-	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS (%.1f%% of target) | Errors: %d (%.2f%% success rate)\n",
-		targetQPS, actualQPS, completionRate, errors, successRate)
+	logger.Info("Test summary",
+		"target_qps", targetQPS,
+		"actual_qps", actualQPS,
+		"completion_rate_percent", completionRate,
+		"total_fired", totalFired,
+		"total_completed", completed,
+		"errors", errors,
+		"success_rate_percent", successRate,
+		"elapsed_seconds", elapsed.Seconds())
 
 	if errors > 0 {
-		fmt.Printf("\nError Breakdown:\n")
+		logger.Info("Error breakdown",
+			"total_errors", errors)
 		for errType, count := range errorBreakdown {
 			percentage := float64(count) / float64(errors) * 100.0
-			fmt.Printf("  - %s errors: %d (%.1f%%)\n", errType, count, percentage)
+			logger.Info("Error type",
+				"error_type", string(errType),
+				"count", count,
+				"percentage", percentage)
 		}
 	}
 
 	if actualQPS < float64(targetQPS)*QPSWarningThreshold {
-		fmt.Printf("\n⚠️  Warning: Only achieved %.1f%% of target QPS. This may indicate:\n", completionRate)
-		fmt.Printf("  - Server-side rate limiting or capacity limits\n")
-		fmt.Printf("  - Network bandwidth constraints\n")
-		fmt.Printf("  - Server may not be able to handle %d QPS (currently using %d connections)\n", targetQPS, numConnections)
-		fmt.Printf("  Note: Increasing connections from %d didn't improve throughput, suggesting server-side bottleneck\n", numConnections)
+		logger.Warn("Low QPS achievement",
+			"completion_rate_percent", completionRate,
+			"target_qps", targetQPS,
+			"actual_qps", actualQPS,
+			"connections", numConnections,
+			"message", "This may indicate server-side rate limiting, capacity limits, or network constraints")
 	}
 
 	if totalFired > completed {
 		pending := totalFired - completed
-		fmt.Printf("Note: %d queries were still in flight when test ended (%.1f%% completion rate)\n",
-			pending, float64(completed)/float64(totalFired)*100)
+		completionRate := float64(completed) / float64(totalFired) * 100
+		logger.Info("Queries still in flight",
+			"pending", pending,
+			"completion_rate_percent", completionRate)
 	}
 }

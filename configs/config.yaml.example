@@ -24,3 +24,17 @@ top_k: 10
 search_level: 1
 filter_expression: ""  # Optional filter expression, e.g., "id > 1000"
 output_fields: ["id"]  # Fields to return in search results
+
+# Seed parameters
+seed_vector_count: 2000000  # Number of vectors to seed (default: 2,000,000)
+seed_vector_dim: 768        # Vector dimension for seeding (default: 768)
+seed_batch_size: 15000      # Batch size for seeding (default: 15,000)
+
+# Logging and observability
+log_level: "INFO"           # Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
+log_format: "text"          # Log format: text or json (default: text)
+metrics_enabled: false      # Enable metrics export (default: false)
+metrics_port: 9090          # Port for metrics endpoint (default: 9090)
+output_directory: ""        # Default export directory (default: current directory)
+max_retries: 3              # Maximum retries for failed operations (default: 3)
+timeout: "30s"              # Global timeout for operations (default: 30s)
