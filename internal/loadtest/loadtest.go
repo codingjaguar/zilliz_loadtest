@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,25 +119,21 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 func CalculateOptimalConnections(targetQPS int) (int, string) {
 	// Estimate based on typical Zilliz Cloud vector search latency
 	// Formula: (QPS * latency_ms) / 1000 gives concurrent requests needed
-	// Then multiply by 1.5x to account for connection overhead and headroom
-	expectedLatencyMs := 75.0 // Conservative estimate for vector search on Zilliz Cloud
-	multiplier := 1.5
-	baseConnections := float64(targetQPS) * expectedLatencyMs / 1000.0
-	connections := int(baseConnections * multiplier)
+	// Then multiply by multiplier to account for connection overhead and headroom
+	baseConnections := float64(targetQPS) * ExpectedLatencyMs / 1000.0
+	connections := int(baseConnections * ConnectionMultiplier)
 
 	// Enforce reasonable bounds
-	if connections < 5 {
-		connections = 5 // Minimum for any meaningful load
+	if connections < MinConnections {
+		connections = MinConnections
 	}
 
-	// Higher limit for very high QPS scenarios
-	maxConnections := 2000
-	if connections > maxConnections {
-		connections = maxConnections
+	if connections > MaxConnections {
+		connections = MaxConnections
 	}
 
 	explanation := fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections (default)",
-		targetQPS, expectedLatencyMs, multiplier, connections)
+		targetQPS, ExpectedLatencyMs, ConnectionMultiplier, connections)
 
 	return connections, explanation
 }
@@ -227,314 +222,73 @@ func (lt *LoadTester) Close() {
 }
 
 func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration, warmupQueries int) (TestResult, error) {
-	// Warm-up phase: run a small number of queries to warm up connections and caches
-	if warmupQueries > 0 {
-		fmt.Printf("Warming up with %d queries...\n", warmupQueries)
-		warmupCtx, warmupCancel := context.WithTimeout(ctx, 60*time.Second)
-		defer warmupCancel()
+	// Warm-up phase
+	lt.runWarmup(ctx, warmupQueries)
 
-		for i := 0; i < warmupQueries; i++ {
-			result := lt.executeQuery(warmupCtx, i)
-			if result.Error != nil && i < 5 {
-				// Log first few errors during warmup
-				fmt.Printf("  Warmup query %d error: %v\n", i+1, result.Error)
-			}
-			if (i+1)%10 == 0 {
-				fmt.Printf("  Warmup progress: %d/%d queries\n", i+1, warmupQueries)
-			}
-		}
-		fmt.Printf("Warmup complete\n\n")
-	}
-
-	// Calculate interval between requests to achieve exact target QPS
+	// Setup test execution
 	interval := time.Second / time.Duration(targetQPS)
-
-	// Create context with timeout
 	testCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 
 	var wg sync.WaitGroup
-	// Make buffer large enough to hold all expected results
-	// For a 5 minute test at 100 QPS, that's 30,000 queries
 	expectedQueries := int(duration.Seconds()) * targetQPS
-	resultsChan := make(chan QueryResult, expectedQueries*2) // 2x buffer for safety
+	resultsChan := make(chan QueryResult, expectedQueries*2)
 
-	startTime := time.Now()
-	queryCount := 0
-	var mu sync.Mutex
-	queriesFired := 0
+	ts := &testState{
+		resultsChan: resultsChan,
+		startTime:   time.Now(),
+	}
 
-	// Simple rate limiter: fire exactly one query per interval
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Create a separate context for query execution that doesn't get cancelled
-	// This allows queries to complete even after the test duration ends
 	queryCtx := ctx // Use parent context, not testCtx
 
-	// Store results for latency calculation
-	var allResults []QueryResult
-	var resultsMu sync.Mutex
-	queriesCompleted := 0 // Track completion count for status updates
+	// Start result collection and status reporting
+	ts.startResultCollector()
+	ts.startStatusReporter(testCtx)
 
-	// Start a goroutine to collect results as they come in
-	go func() {
-		for result := range resultsChan {
-			resultsMu.Lock()
-			allResults = append(allResults, result)
-			queriesCompleted++
-			resultsMu.Unlock()
-		}
-	}()
-
-	// Status update ticker - print progress every 5 seconds
-	statusTicker := time.NewTicker(5 * time.Second)
-	defer statusTicker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-testCtx.Done():
-				return
-			case <-statusTicker.C:
-				mu.Lock()
-				fired := queriesFired
-				mu.Unlock()
-				resultsMu.Lock()
-				completed := queriesCompleted
-				resultsMu.Unlock()
-				elapsed := time.Since(startTime)
-				currentQPS := float64(completed) / elapsed.Seconds()
-				fmt.Printf("[Status] Elapsed: %v | Fired: %d | Completed: %d | Current QPS: %.2f\n",
-					elapsed.Round(time.Second), fired, completed, currentQPS)
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case <-testCtx.Done():
-				return
-			case <-ticker.C:
-				mu.Lock()
-				queryCount++
-				currentQuery := queryCount
-				queriesFired++
-				mu.Unlock()
-
-				wg.Add(1)
-				go func(queryNum int) {
-					defer wg.Done()
-					// Use recover to catch panic if channel is closed
-					defer func() {
-						if r := recover(); r != nil {
-							// Channel was closed, that's okay - we'll just drop this result
-							// This can happen if we timeout waiting for queries
-						}
-					}()
-					// Use queryCtx instead of testCtx so queries can complete
-					// even after the test duration ends
-					result := lt.executeQuery(queryCtx, queryNum)
-					// Try to send result, but handle case where channel might be closed
-					// Use select to avoid blocking forever if channel is closed
-					select {
-					case resultsChan <- result:
-						// Successfully sent
-					case <-time.After(1 * time.Second):
-						// Timeout - channel might be closed or full, but that's okay
-						// We'll just drop this result if we can't send it
-					}
-				}(currentQuery)
-			}
-		}
-	}()
+	// Start firing queries
+	lt.startQueryFirer(testCtx, queryCtx, interval, ts, &wg)
 
 	// Wait for test duration
 	<-testCtx.Done()
 
-	mu.Lock()
-	totalFired := queriesFired
-	mu.Unlock()
-
-	resultsMu.Lock()
-	completedDuringTest := queriesCompleted
-	resultsMu.Unlock()
+	totalFired := int(atomic.LoadInt64(&ts.queriesFired))
+	completedDuringTest := int(atomic.LoadInt64(&ts.queriesCompleted))
 
 	inFlight := totalFired - completedDuringTest
 	fmt.Printf("\nTest duration ended. Waiting for %d in-flight queries to complete...\n", inFlight)
 
-	// Wait for all queries to complete (with longer timeout for long tests)
-	waitTimeout := duration / 2
-	if waitTimeout < 30*time.Second {
-		waitTimeout = 30 * time.Second
-	}
-	if waitTimeout > 5*time.Minute {
-		waitTimeout = 5 * time.Minute
-	}
+	// Wait for completion
+	waitTimeout := calculateWaitTimeout(duration)
+	ts.waitForCompletion(&wg, waitTimeout)
 
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
+	// Close channel and wait for collector
+	close(ts.resultsChan)
+	time.Sleep(ResultCollectorDelay)
 
-	// Show progress while waiting
-	progressTicker := time.NewTicker(2 * time.Second)
-	defer progressTicker.Stop()
+	elapsed := time.Since(ts.startTime)
 
-	progressDone := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-progressDone:
-				return
-			case <-progressTicker.C:
-				resultsMu.Lock()
-				completed := queriesCompleted
-				resultsMu.Unlock()
-				fmt.Printf("  Waiting... %d queries completed so far\n", completed)
-			}
-		}
-	}()
+	// Get final results
+	ts.resultsMu.Lock()
+	allResults := ts.allResults
+	ts.resultsMu.Unlock()
 
-	select {
-	case <-done:
-		close(progressDone)
-		fmt.Printf("All queries completed\n")
-	case <-time.After(waitTimeout):
-		close(progressDone)
-		fmt.Printf("Warning: Timed out waiting for queries after %v. Some queries may still be running\n", waitTimeout)
-		// Give goroutines a grace period to finish sending before we close the channel
-		// This reduces the chance of panic from sending to closed channel
-		time.Sleep(2 * time.Second)
+	// Process results
+	stats := processQueryResults(allResults)
+
+	if len(stats.latencies) == 0 && stats.firstError != nil {
+		fmt.Printf("ERROR: All queries failed. First error: %v\n", stats.firstError)
 	}
 
-	// Close channel - goroutines have recover() to handle if they try to send after this
-	// The result collector goroutine will finish reading any remaining results
-	close(resultsChan)
+	min, max, avgLatency, p50, p90, p95, p99 := calculateLatencyStats(stats.latencies)
 
-	// Give the result collector goroutine a moment to finish
-	time.Sleep(100 * time.Millisecond)
+	// Check and report high latencies
+	p95, p99, _ = reportHighLatencyWarning(min, max, avgLatency, p95, p99, stats.latencies)
 
-	elapsed := time.Since(startTime)
+	// Report summary
+	completed := len(stats.latencies)
+	reportTestSummary(targetQPS, totalFired, completed, stats.errors, stats.errorBreakdown, elapsed, len(lt.clients))
 
-	// Process collected results for latency calculation
-	resultsMu.Lock()
-	var latencies []float64
-	errors := 0
-	firstError := error(nil)
-	errorBreakdown := make(map[ErrorType]int)
-
-	for _, result := range allResults {
-		if result.Error != nil {
-			errors++
-			if firstError == nil {
-				firstError = result.Error
-			}
-			// Categorize error
-			errorType := categorizeError(result.Error)
-			errorBreakdown[errorType]++
-			continue
-		}
-		latencies = append(latencies, float64(result.Latency.Milliseconds()))
-	}
-	resultsMu.Unlock()
-
-	// Print first error if all queries failed
-	if len(latencies) == 0 && firstError != nil {
-		fmt.Printf("ERROR: All queries failed. First error: %v\n", firstError)
-	}
-
-	// Calculate percentiles
-	sort.Float64s(latencies)
-
-	// Calculate some basic stats to detect issues
-	var sum float64
-	var min, max, avgLatency float64
-	if len(latencies) > 0 {
-		min = latencies[0]
-		max = latencies[len(latencies)-1]
-		for _, l := range latencies {
-			sum += l
-		}
-		avgLatency = sum / float64(len(latencies))
-	}
-
-	p50 := calculatePercentile(latencies, 50)
-	p90 := calculatePercentile(latencies, 90)
-	p95 := calculatePercentile(latencies, 95)
-	p99 := calculatePercentile(latencies, 99)
-
-	// Check for suspiciously high latencies (likely due to queuing at high QPS)
-	// At high QPS, queries queue up and latency includes wait time
-	if max > 1000 { // More than 1 second is suspicious
-		fmt.Printf("\nWarning: Detected very high latencies (max: %.2f ms). This may indicate:\n", max)
-		fmt.Printf("  - Server-side queuing (queries waiting for server capacity)\n")
-		fmt.Printf("  - Network congestion\n")
-		fmt.Printf("  - Note: These latencies include queue time, not just API response time\n")
-		fmt.Printf("  Latency stats: min=%.2f ms, avg=%.2f ms, p95=%.2f ms, p99=%.2f ms, max=%.2f ms\n",
-			min, avgLatency, p95, p99, max)
-
-		// Filter out queries with high latency (likely queuing, not actual API response time)
-		// Use a more reasonable cutoff - anything over 1 second is probably queuing
-		filteredLatencies := make([]float64, 0, len(latencies))
-		for _, l := range latencies {
-			if l < 1000 { // Filter out anything over 1 second (likely queuing)
-				filteredLatencies = append(filteredLatencies, l)
-			}
-		}
-
-		if len(filteredLatencies) > 0 && len(filteredLatencies) < len(latencies) {
-			sort.Float64s(filteredLatencies)
-			filteredP95 := calculatePercentile(filteredLatencies, 95)
-			filteredP99 := calculatePercentile(filteredLatencies, 99)
-			queuedCount := len(latencies) - len(filteredLatencies)
-			fmt.Printf("  Filtered stats (excluding queued queries >1s): p95=%.2f ms, p99=%.2f ms\n",
-				filteredP95, filteredP99)
-			fmt.Printf("  %d queries (%.1f%%) had latencies >1s, likely due to server-side queuing\n",
-				queuedCount, float64(queuedCount)/float64(len(latencies))*100)
-			// Use filtered values for reporting (more representative of actual API latency)
-			p95 = filteredP95
-			p99 = filteredP99
-		} else if len(filteredLatencies) == 0 {
-			// All queries were queued - this is a severe bottleneck
-			fmt.Printf("  ⚠️  All queries had latencies >1s - severe server-side bottleneck detected\n")
-		}
-	}
-
-	actualQPS := float64(len(latencies)) / elapsed.Seconds()
-	completionRate := (actualQPS / float64(targetQPS)) * 100.0 // Percentage of target QPS achieved
-	successRate := float64(len(latencies)) / float64(totalFired) * 100.0
-	
-	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, len(latencies), elapsed)
-	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS (%.1f%% of target) | Errors: %d (%.2f%% success rate)\n",
-		targetQPS, actualQPS, completionRate, errors, successRate)
-	
-	// Print error breakdown if there are errors
-	if errors > 0 {
-		fmt.Printf("\nError Breakdown:\n")
-		for errType, count := range errorBreakdown {
-			percentage := float64(count) / float64(errors) * 100.0
-			fmt.Printf("  - %s errors: %d (%.1f%%)\n", errType, count, percentage)
-		}
-	}
-
-	// Warn if we're significantly below target QPS
-	if actualQPS < float64(targetQPS)*0.8 {
-		fmt.Printf("\n⚠️  Warning: Only achieved %.1f%% of target QPS. This may indicate:\n", completionRate)
-		fmt.Printf("  - Server-side rate limiting or capacity limits\n")
-		fmt.Printf("  - Network bandwidth constraints\n")
-		fmt.Printf("  - Server may not be able to handle %d QPS (currently using %d connections)\n", targetQPS, len(lt.clients))
-		fmt.Printf("  Note: Increasing connections from %d didn't improve throughput, suggesting server-side bottleneck\n", len(lt.clients))
-	}
-
-	// Explain what happened
-	if totalFired > len(latencies) {
-		pending := totalFired - len(latencies)
-		fmt.Printf("Note: %d queries were still in flight when test ended (%.1f%% completion rate)\n",
-			pending, float64(len(latencies))/float64(totalFired)*100)
-	}
+	successRate := float64(completed) / float64(totalFired) * 100.0
 
 	return TestResult{
 		QPS:            targetQPS,
@@ -545,9 +299,9 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		MinLatency:     min,
 		MaxLatency:     max,
 		AvgLatency:     avgLatency,
-		TotalQueries:   len(latencies),
-		Errors:         errors,
-		ErrorBreakdown: errorBreakdown,
+		TotalQueries:   completed,
+		Errors:         stats.errors,
+		ErrorBreakdown: stats.errorBreakdown,
 		SuccessRate:    successRate,
 	}, nil
 }
@@ -765,104 +519,4 @@ func categorizeError(err error) ErrorType {
 	return ErrorTypeUnknown
 }
 
-// SeedDatabase seeds the database with the specified number of vectors
-func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVectors int) error {
-	ctx := context.Background()
-
-	// Create client
-	milvusClient, err := CreateZillizClient(apiKey, databaseURL)
-	if err != nil {
-		return fmt.Errorf("failed to create client: %w", err)
-	}
-	defer milvusClient.Close()
-
-	// Batch size for efficient inserts (reduced to avoid gRPC message size limits and throttling)
-	// With 768 dimensions, each vector is ~3KB, so 15,000 vectors = ~45MB (well under 64MB limit)
-	batchSize := 15000
-	totalBatches := (totalVectors + batchSize - 1) / batchSize
-
-	fmt.Printf("\nStarting database seed operation\n")
-	fmt.Printf("================================\n")
-	fmt.Printf("Collection: %s\n", collection)
-	fmt.Printf("Vector Dimension: %d\n", vectorDim)
-	fmt.Printf("Total Vectors: %d\n", totalVectors)
-	fmt.Printf("Batch Size: %d\n\n", batchSize)
-
-	startTime := time.Now()
-	vectorsInserted := 0
-
-	for batchNum := 0; batchNum < totalBatches; batchNum++ {
-		batchStart := batchNum * batchSize
-		batchEnd := batchStart + batchSize
-		if batchEnd > totalVectors {
-			batchEnd = totalVectors
-		}
-		currentBatchSize := batchEnd - batchStart
-
-		// Show progress before generating vectors
-		progressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
-		fmt.Printf("[Progress: %.1f%%] Generating batch %d/%d (%d vectors)...\r",
-			progressPercent, batchNum+1, totalBatches, currentBatchSize)
-
-		// Generate vectors for this batch
-		generateStart := time.Now()
-		vectors := make([][]float32, currentBatchSize)
-		for i := 0; i < currentBatchSize; i++ {
-			// Use batchStart + i as seed to ensure unique vectors
-			vectors[i] = generateSeedingVector(vectorDim, int64(batchStart+i))
-
-			// Show progress every 5000 vectors during generation
-			if (i+1)%5000 == 0 {
-				progressPercent := float64(vectorsInserted+i+1) / float64(totalVectors) * 100
-				fmt.Printf("\r[Progress: %.1f%%] Generating batch %d/%d (%d/%d vectors)...",
-					progressPercent, batchNum+1, totalBatches, i+1, currentBatchSize)
-			}
-		}
-		generateTime := time.Since(generateStart)
-
-		// Create vector column
-		vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
-
-		// Insert the batch (using Insert instead of Upsert since autoID is enabled)
-		batchStartTime := time.Now()
-		uploadProgressPercent := float64(vectorsInserted) / float64(totalVectors) * 100
-		fmt.Printf("\r[Progress: %.1f%%] Uploading batch %d/%d...",
-			uploadProgressPercent, batchNum+1, totalBatches)
-
-		_, err := milvusClient.Insert(ctx, collection, "", vectorColumn)
-		if err != nil {
-			return fmt.Errorf("failed to insert batch %d: %w", batchNum+1, err)
-		}
-
-		vectorsInserted += currentBatchSize
-		uploadTime := time.Since(batchStartTime)
-		totalBatchTime := time.Since(generateStart)
-		rate := float64(currentBatchSize) / totalBatchTime.Seconds()
-
-		// Calculate estimated time remaining
-		elapsedTotal := time.Since(startTime)
-		avgRate := float64(vectorsInserted) / elapsedTotal.Seconds()
-		remainingVectors := totalVectors - vectorsInserted
-		estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
-
-		progressPercent = float64(vectorsInserted) / float64(totalVectors) * 100
-
-		// Print detailed progress after each batch
-		fmt.Printf("\r[Progress: %.1f%%] Batch %d/%d: Inserted %d vectors (Generate: %v, Upload: %v, Total: %v, %.0f vec/s) [ETA: %v]\n",
-			progressPercent, batchNum+1, totalBatches, currentBatchSize,
-			generateTime.Round(time.Millisecond), uploadTime.Round(time.Millisecond),
-			totalBatchTime.Round(time.Millisecond), rate, estimatedTimeRemaining.Round(time.Second))
-	}
-
-	totalElapsed := time.Since(startTime)
-	avgRate := float64(vectorsInserted) / totalElapsed.Seconds()
-
-	fmt.Printf("\n================================\n")
-	fmt.Printf("Seed operation completed!\n")
-	fmt.Printf("Total vectors inserted: %d\n", vectorsInserted)
-	fmt.Printf("Total time: %v\n", totalElapsed)
-	fmt.Printf("Average rate: %.0f vectors/sec\n", avgRate)
-	fmt.Printf("================================\n")
-
-	return nil
-}
+// SeedDatabase is now in seed.go
