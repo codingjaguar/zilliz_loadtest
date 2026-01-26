@@ -1,15 +1,20 @@
 # Zilliz Cloud Load Test Tool
 
-A CLI tool for seeding and load testing Zilliz Cloud with configurable QPS and comprehensive metrics collection.
+A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configurable QPS, enhanced metrics collection, pre-flight validation, and result export capabilities.
 
 ## Features
 
 - **Database Seeding**: Seed your database with 2 million 768-dimension vectors via the insert API
-- Configurable QPS levels (default: 100, 500, 1000 QPS)
-- Measures P95 and P99 latencies
-- Real-time status updates during load tests
-- Waits for all in-flight queries to complete before reporting results
-- Comprehensive results summary with fired vs completed QPS metrics
+- **Pre-flight Validation**: Automatic collection validation before tests (existence, schema, data, indexes)
+- **Enhanced Metrics**: P50, P90, P95, P99 latencies, min/max/avg, error categorization, success rates
+- **Configurable QPS Levels**: Test multiple QPS levels in a single run (default: 100, 500, 1000 QPS)
+- **Real-time Status Updates**: Progress updates every 5 seconds during load tests
+- **Warm-up Period**: Configurable warm-up queries to stabilize connections and caches
+- **Error Categorization**: Automatic classification of errors (network, API, timeout, SDK)
+- **Result Export**: Export results to JSON and CSV formats for analysis
+- **Configuration File Support**: YAML config file with environment variable overrides
+- **Configurable Search Parameters**: Customize topK, filter expressions, search level, and output fields
+- **Comprehensive Reporting**: Detailed results summary with error breakdowns
 
 ## Installation
 
@@ -17,6 +22,56 @@ A CLI tool for seeding and load testing Zilliz Cloud with configurable QPS and c
 go mod download
 go build -o zilliz-loadtest
 ```
+
+## Quick Start
+
+1. **Create a configuration file** (optional but recommended):
+   ```bash
+   cp config.yaml.example config.yaml
+   # Edit config.yaml with your API key and database URL
+   ```
+
+2. **Or use environment variables**:
+   ```bash
+   export ZILLIZ_API_KEY="your-api-key"
+   export ZILLIZ_DB_URL="https://your-cluster.zillizcloud.com"
+   ```
+
+3. **Run the tool**:
+   ```bash
+   ./zilliz-loadtest
+   ```
+
+## Configuration
+
+### Configuration File
+
+Create a `config.yaml` file in the current directory or `~/.zilliz-loadtest.yaml`. See `config.yaml.example` for a template.
+
+**Example config.yaml:**
+```yaml
+api_key: "your-api-key-here"
+database_url: "https://your-cluster.zillizcloud.com"
+default_collection: "my_collection"
+default_vector_dim: 768
+default_metric_type: "L2"
+default_duration: "30s"
+default_qps_levels: [100, 500, 1000]
+connection_multiplier: 1.5
+expected_latency_ms: 75.0
+warmup_queries: 100
+top_k: 10
+search_level: 1
+filter_expression: ""
+output_fields: ["id"]
+```
+
+### Environment Variables
+
+- `ZILLIZ_API_KEY`: Your Zilliz Cloud API key
+- `ZILLIZ_DB_URL`: Your Zilliz Cloud database URL
+
+Environment variables override config file values.
 
 ## Usage
 
@@ -35,174 +90,106 @@ The tool uses an interactive CLI that starts with a menu:
 
 When you choose option 1, you will be prompted to enter:
 
-1. **API Key** (required): Your Zilliz Cloud API key
-2. **Database URL** (required): Your Zilliz Cloud database URL
+1. **API Key** (required): Your Zilliz Cloud API key (or use config/env)
+2. **Database URL** (required): Your Zilliz Cloud database URL (or use config/env)
 3. **Collection Name** (required): The collection to seed
 4. **Confirmation**: Confirm before starting the seed operation
 
 The seed operation will:
 - Insert 2,000,000 vectors of 768 dimensions
-- Use batches of 50,000 vectors for efficient insertion
+- Use batches of 15,000 vectors for efficient insertion
 - Display progress and insertion rate
 - Assume autoID is enabled (no primary key required)
 - Assume no scalar fields (only vector data)
 
 ### Load Test
 
-When you choose option 2, you will be prompted to enter:
+When you choose option 2, the tool will:
 
-1. **API Key** (required): Your Zilliz Cloud API key
-2. **Database URL** (required): Your Zilliz Cloud database URL
-3. **Collection Name** (required): The collection to test
-4. **Vector Dimension** (required): Vector dimension for query vectors
-5. **Metric Type** (required): Distance metric type - one of:
-   - `L2`: Euclidean distance (L2 norm)
-   - `IP`: Inner Product
-   - `COSINE`: Cosine similarity
-6. **QPS Levels** (required): Comma-separated QPS values to test (e.g., `100,500,1000`)
-7. **Duration** (optional, default: 30s): Duration for each QPS test (e.g., `30s`, `1m`)
+1. **Load Configuration**: Automatically load from config file or environment variables
+2. **Pre-flight Validation**: Validate collection existence, schema, data availability, and indexes
+3. **Prompt for Test Parameters**:
+   - Collection name (if not in config)
+   - Vector dimension (if not in config)
+   - Metric type: L2, IP (Inner Product), or COSINE
+   - QPS levels (comma-separated, e.g., `100,500,1000`)
+   - Duration for each QPS test (e.g., `30s`, `1m`)
+   - Connection counts (optional customization)
 
-**Note**: The tool uses the default search level (level 1) which optimizes for latency. This is ideal for pure latency testing.
+4. **Run Tests**: Execute load tests at each QPS level with:
+   - Warm-up queries (configurable, default: 100)
+   - Real-time status updates
+   - Comprehensive metrics collection
+
+5. **Display Results**: Show enhanced metrics table with error breakdowns
+
+6. **Export Results**: Optionally export to JSON or CSV
+
+## Enhanced Metrics
+
+The tool now provides comprehensive latency metrics:
+
+- **P50 Latency**: Median latency (50th percentile)
+- **P90 Latency**: 90th percentile latency
+- **P95 Latency**: 95th percentile latency
+- **P99 Latency**: 99th percentile latency
+- **Average Latency**: Mean latency across all queries
+- **Min/Max Latency**: Minimum and maximum observed latencies
+- **Success Rate**: Percentage of successful queries
+- **Error Breakdown**: Categorized errors (network, API, timeout, SDK)
+
+## Error Categorization
+
+Errors are automatically categorized into:
+
+- **Network Errors**: Connection issues, network failures
+- **API Errors**: Rate limits, authentication, invalid requests
+- **Timeout Errors**: Query timeouts, deadline exceeded
+- **SDK Errors**: Serialization, protobuf issues
+- **Unknown Errors**: Unclassified errors
+
+## Result Export
+
+After completing a load test, you can export results to:
+
+- **JSON Format**: Includes metadata, all test results, and summary statistics
+- **CSV Format**: Tabular format for spreadsheet analysis
+
+Export files are automatically timestamped if no custom path is provided.
 
 ## Example Output
 
-### Seed Database Example
+### Pre-flight Validation
 
 ```
-Zilliz Cloud Load Test Tool
-===========================
-
-What would you like to do?
-1. Seed the database
-2. Run a read query load test
-
-Enter your choice (1 or 2): 1
-
-Database Seed Configuration
-===========================
-
-Enter API Key: your_api_key_here
-Enter Database URL: https://your-cluster.zillizcloud.com
-Enter Collection Name: my_collection
-Vector Dimension: 768 (fixed for seed operation)
-Total Vectors: 2000000 (fixed for seed operation)
-
-This will insert 2,000,000 vectors of 768 dimensions into the collection.
-Do you want to continue? (yes/no): yes
-
-Starting database seed operation
-================================
+============================================================
+Pre-flight Validation Results
+============================================================
 Collection: my_collection
-Vector Dimension: 768
-Total Vectors: 2000000
-Batch Size: 15000
 
-[Progress: 0.0%] Generating batch 1/134 (15000 vectors)...
-[Progress: 0.8%] Batch 1/134: Inserted 15000 vectors (Generate: 0.9s, Upload: 1.7s, Total: 2.6s, 5769 vec/s) [ETA: 5m 45s]
-[Progress: 1.5%] Generating batch 2/134 (15000 vectors)...
-[Progress: 1.5%] Batch 2/134: Inserted 15000 vectors (Generate: 0.8s, Upload: 1.6s, Total: 2.4s, 6250 vec/s) [ETA: 5m 18s]
-...
-[Progress: 100.0%] Batch 134/134: Inserted 15000 vectors (Generate: 0.9s, Upload: 1.7s, Total: 2.6s, 5769 vec/s) [ETA: 0s]
-
-================================
-Seed operation completed!
-Total vectors inserted: 2000000
-Total time: 1m 32s
-Average rate: 21739 vectors/sec
-================================
+✓ Connection: Healthy
+✓ Collection: Exists
+✓ Collection: Loaded in memory
+✓ Data: 2000000 rows
+✓ Vector Field: Exists (dimension: 768)
+✓ Index: Exists and built
+============================================================
 ```
 
-### Load Test Example
+### Load Test Results
 
 ```
-Zilliz Cloud Load Test Tool
-===========================
-
-What would you like to do?
-1. Seed the database
-2. Run a read query load test
-
-Enter your choice (1 or 2): 2
-
-Load Test Configuration
-=======================
-
-Enter API Key: your_api_key_here
-Enter Database URL: https://your-cluster.zillizcloud.com
-Enter Collection Name: my_collection
-Enter Vector Dimension: 768
-
-Metric Type options: L2, IP (Inner Product), COSINE
-Enter Metric Type: L2
-
-Enter QPS levels to test (comma-separated, e.g., 100,500,1000):
-QPS Levels: 100,500,1000
-Enter Duration for each QPS test (e.g., 30s, 1m) [default: 30s]: 30s
-
-Starting Zilliz Cloud Load Test
-==============================
-Database URL: https://your-cluster.zillizcloud.com
-Collection: my_collection
-Vector Dimension: 768
-Metric Type: L2
-Duration per QPS: 30s
-QPS Levels: [100 500 1000]
-
---- Running test at 100 QPS for 30s ---
-[Status] Elapsed: 5s | Fired: 500 | Completed: 485 | Current QPS: 97.00
-[Status] Elapsed: 10s | Fired: 1000 | Completed: 975 | Current QPS: 97.50
-[Status] Elapsed: 15s | Fired: 1500 | Completed: 1470 | Current QPS: 98.00
-[Status] Elapsed: 20s | Fired: 2000 | Completed: 1965 | Current QPS: 98.25
-[Status] Elapsed: 25s | Fired: 2500 | Completed: 2455 | Current QPS: 98.20
-[Status] Elapsed: 30s | Fired: 3000 | Completed: 2940 | Current QPS: 98.00
-
-Test duration ended. Waiting for 60 in-flight queries to complete...
-  Waiting... 2950 queries completed so far
-  Waiting... 2995 queries completed so far
-All queries completed
-Fired: 3000 queries | Completed: 3000 queries in 30.5s
-Fired at: 100 QPS | Completed at: 98.36 QPS | Errors: 0
-
---- Running test at 500 QPS for 30s ---
-[Status] Elapsed: 5s | Fired: 2500 | Completed: 2400 | Current QPS: 480.00
-[Status] Elapsed: 10s | Fired: 5000 | Completed: 4850 | Current QPS: 485.00
-[Status] Elapsed: 15s | Fired: 7500 | Completed: 7300 | Current QPS: 486.67
-[Status] Elapsed: 20s | Fired: 10000 | Completed: 9750 | Current QPS: 487.50
-[Status] Elapsed: 25s | Fired: 12500 | Completed: 12200 | Current QPS: 488.00
-[Status] Elapsed: 30s | Fired: 15000 | Completed: 14650 | Current QPS: 488.33
-
-Test duration ended. Waiting for 350 in-flight queries to complete...
-  Waiting... 14750 queries completed so far
-  Waiting... 14900 queries completed so far
-All queries completed
-Fired: 15000 queries | Completed: 15000 queries in 30.2s
-Fired at: 500 QPS | Completed at: 496.69 QPS | Errors: 0
-
---- Running test at 1000 QPS for 30s ---
-[Status] Elapsed: 5s | Fired: 5000 | Completed: 4800 | Current QPS: 960.00
-[Status] Elapsed: 10s | Fired: 10000 | Completed: 9600 | Current QPS: 960.00
-[Status] Elapsed: 15s | Fired: 15000 | Completed: 14400 | Current QPS: 960.00
-[Status] Elapsed: 20s | Fired: 20000 | Completed: 19200 | Current QPS: 960.00
-[Status] Elapsed: 25s | Fired: 25000 | Completed: 24000 | Current QPS: 960.00
-[Status] Elapsed: 30s | Fired: 30000 | Completed: 28800 | Current QPS: 960.00
-
-Test duration ended. Waiting for 1200 in-flight queries to complete...
-  Waiting... 29000 queries completed so far
-  Waiting... 29950 queries completed so far
-All queries completed
-Fired: 30000 queries | Completed: 29998 queries in 30.1s
-Fired at: 1000 QPS | Completed at: 996.68 QPS | Errors: 2
-Note: 2 queries were still in flight when test ended (100.0% completion rate)
-
 ==============================
 Load Test Results Summary
 ==============================
 
-QPS        | P95 (ms)     | P99 (ms)     | Total Queries
------------+--------------+--------------+---------------
-100        | 45.23        | 67.89        | 3000
-500        | 52.45        | 89.12        | 15000
-1000       | 78.34        | 125.67       | 29998
+QPS    | P50    | P90    | P95    | P99    | Avg    | Min    | Max    | Errors | Success%
+--------+--------+--------+--------+--------+--------+--------+--------+--------+----------
+100    | 42.10  | 58.30  | 65.20  | 89.40  | 45.80  | 12.30  | 234.50 | 0      | 100.00
+500    | 48.70  | 72.10  | 85.60  | 125.30 | 52.40  | 15.20  | 456.70 | 2      | 99.60
+  Error Breakdown: timeout: 1 (50.0%), network: 1 (50.0%)
+1000   | 65.40  | 98.20  | 112.50 | 178.90 | 71.20  | 18.90  | 892.10 | 15     | 98.50
+  Error Breakdown: timeout: 10 (66.7%), network: 3 (20.0%), api: 2 (13.3%)
 ```
 
 ## Notes
@@ -219,21 +206,89 @@ QPS        | P95 (ms)     | P99 (ms)     | Total Queries
 - **Collection Requirements**: Ensure your collection exists and is configured with:
   - A vector field named "vector" with 768 dimensions
   - AutoID enabled for the primary key
-  - Appropriate index created (the tool will use AUTOINDEX with level parameter during load tests)
+  - Appropriate index created
 
 ### Load Testing
 
-- The tool uses random query vectors for testing. In production, you may want to use actual query vectors from your dataset.
-- **Vector Dimension**: Required parameter that must match the dimension of vectors in your collection.
-- **Metric Type**: Required parameter that must match the metric type used when creating the collection index. Common options are L2 (Euclidean distance), IP (Inner Product), and COSINE (Cosine similarity).
-- **Search Level**: The tool uses the default search level (level 1), which optimizes for latency. This is ideal for pure latency testing. The level parameter is not configurable in this version.
-- **QPS Measurement**: The tool fires queries at the exact target QPS rate, regardless of completion time. This allows you to measure latency at the intended load level. The results show both "Fired at" (target QPS) and "Completed at" (actual completion rate) metrics.
-- **Status Updates**: During the test, status updates are printed every 5 seconds showing elapsed time, fired queries, completed queries, and current QPS.
-- **In-Flight Queries**: After the test duration ends, the tool waits for all in-flight queries to complete before reporting final results. This ensures accurate latency measurements even if queries take longer than the test duration.
-- **Latency Metrics**: P95 and P99 latencies are calculated from all completed queries, providing accurate percentile measurements.
-- Ensure your collection is loaded and contains data before running the load test.
+- **Pre-flight Validation**: The tool automatically validates your collection before starting tests to catch configuration issues early
+- **Vector Dimension**: Required parameter that must match the dimension of vectors in your collection
+- **Metric Type**: Required parameter that must match the metric type used when creating the collection index. Common options are L2 (Euclidean distance), IP (Inner Product), and COSINE (Cosine similarity)
+- **Search Level**: Configurable search level (default: 1) which optimizes for latency
+- **QPS Measurement**: The tool fires queries at the exact target QPS rate, regardless of completion time. This allows you to measure latency at the intended load level. The results show both "Fired at" (target QPS) and "Completed at" (actual completion rate) metrics
+- **Status Updates**: During the test, status updates are printed every 5 seconds showing elapsed time, fired queries, completed queries, and current QPS
+- **Warm-up Period**: Before each test, a configurable number of warm-up queries are executed to stabilize connections and warm caches
+- **In-Flight Queries**: After the test duration ends, the tool waits for all in-flight queries to complete before reporting final results. This ensures accurate latency measurements even if queries take longer than the test duration
+- **Latency Metrics**: Comprehensive percentile latencies (P50, P90, P95, P99) are calculated from all completed queries, providing accurate percentile measurements
+- **Error Handling**: Errors are automatically categorized and reported with breakdowns to help diagnose issues
+- Ensure your collection is loaded and contains data before running the load test
+
+### Connection Calculation
+
+The tool automatically calculates the optimal number of connections based on:
+- Formula: `connections = (QPS × expected_latency_ms) / 1000 × multiplier`
+- Default: 75ms expected latency, 1.5x multiplier
+- You can customize connection counts per QPS level if needed
+
+### Best Practices
+
+1. **Run Pre-flight Validation**: Always let the tool validate your collection before testing
+2. **Use Warm-up**: Enable warm-up queries (default: 100) to get stable results
+3. **Test Multiple QPS Levels**: Test a range of QPS levels to understand performance characteristics
+4. **Export Results**: Export results to JSON/CSV for trend analysis and reporting
+5. **Monitor Error Rates**: Pay attention to error breakdowns to identify issues early
+6. **Use Configuration Files**: Store your settings in config files for consistency
+
+### Troubleshooting
+
+**Collection validation fails:**
+- Ensure the collection exists and is accessible
+- Verify the vector dimension matches your collection schema
+- Check that the collection has data (row count > 0)
+- Ensure indexes are built
+
+**Low QPS achievement:**
+- Check error breakdowns for network or API issues
+- Verify server-side capacity and rate limits
+- Consider increasing connection counts (though this may not help if server is the bottleneck)
+- Check network bandwidth and latency
+
+**High latency:**
+- Review P95/P99 latencies vs average to identify outliers
+- Check for server-side queuing (queries with >1s latency are filtered in reports)
+- Verify collection is properly indexed
+- Consider adjusting search level for latency vs recall tradeoff
+
+**Export issues:**
+- Ensure you have write permissions in the output directory
+- Check disk space availability
 
 ### General
 
-- The SDK method signatures may vary by version. If you encounter compilation errors, you may need to adjust the method calls in `loadtest.go` to match your SDK version.
-- The tool supports both `client.NewClient` and `client.NewGrpcClient` initialization methods for compatibility with different SDK versions.
+- The SDK method signatures may vary by version. If you encounter compilation errors, you may need to adjust the method calls in `loadtest.go` to match your SDK version
+- The tool supports both `client.NewClient` and `client.NewGrpcClient` initialization methods for compatibility with different SDK versions
+- Configuration files support YAML format with environment variable overrides
+- Results can be exported in JSON (with metadata) or CSV (tabular) formats
+
+## File Structure
+
+```
+zilliz-loadtest/
+├── main.go              # CLI interface and orchestration
+├── loadtest.go          # Core load testing logic
+├── validation.go        # Pre-flight validation
+├── config.go            # Configuration management
+├── export.go            # Result export functionality
+├── config.yaml.example  # Example configuration file
+├── go.mod               # Go dependencies
+└── README.md            # This file
+```
+
+## Contributing
+
+This is a template tool for customers. Feel free to customize it for your specific needs. Key areas for customization:
+
+- Search parameters (topK, filters, search level)
+- Vector generation strategies
+- Additional metrics collection
+- Custom export formats
+- Integration with monitoring systems

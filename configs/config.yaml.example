@@ -1,0 +1,26 @@
+# Zilliz Cloud Load Test Tool Configuration
+# Copy this file to config.yaml or ~/.zilliz-loadtest.yaml and fill in your values
+
+# API credentials (can also be set via environment variables: ZILLIZ_API_KEY, ZILLIZ_DB_URL)
+api_key: "your-api-key-here"
+database_url: "https://your-cluster.zillizcloud.com"
+
+# Default collection settings
+default_collection: "my_collection"
+default_vector_dim: 768
+default_metric_type: "L2"  # Options: L2, IP, COSINE
+
+# Default test settings
+default_duration: "30s"  # e.g., "30s", "1m", "5m"
+default_qps_levels: [100, 500, 1000]
+
+# Connection calculation settings
+connection_multiplier: 1.5
+expected_latency_ms: 75.0
+
+# Test parameters
+warmup_queries: 100
+top_k: 10
+search_level: 1
+filter_expression: ""  # Optional filter expression, e.g., "id > 1000"
+output_fields: ["id"]  # Fields to return in search results

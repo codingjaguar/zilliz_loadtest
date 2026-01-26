@@ -1,10 +1,11 @@
-package main
+package loadtest
 
 import (
 	"context"
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,28 +15,51 @@ import (
 )
 
 type LoadTester struct {
-	clients    []client.Client // Multiple clients for connection pooling
-	clientIdx  int64           // Atomic counter for round-robin client selection
-	collection string
-	vectorDim  int
-	metricType entity.MetricType
+	clients         []client.Client // Multiple clients for connection pooling
+	clientIdx       int64           // Atomic counter for round-robin client selection
+	collection      string
+	vectorDim       int
+	metricType      entity.MetricType
+	topK            int
+	filterExpr      string
+	outputFields    []string
+	searchLevel     int
 }
 
+// ErrorType categorizes different types of errors
+type ErrorType string
+
+const (
+	ErrorTypeNetwork ErrorType = "network"
+	ErrorTypeAPI     ErrorType = "api"
+	ErrorTypeTimeout ErrorType = "timeout"
+	ErrorTypeSDK     ErrorType = "sdk"
+	ErrorTypeUnknown ErrorType = "unknown"
+)
+
 type TestResult struct {
-	QPS          int
-	P95Latency   float64 // in milliseconds
-	P99Latency   float64 // in milliseconds
-	TotalQueries int
-	Errors       int
+	QPS            int
+	P50Latency     float64 // in milliseconds
+	P90Latency     float64 // in milliseconds
+	P95Latency     float64 // in milliseconds
+	P99Latency     float64 // in milliseconds
+	MinLatency     float64 // in milliseconds
+	MaxLatency     float64 // in milliseconds
+	AvgLatency     float64 // in milliseconds
+	TotalQueries   int
+	Errors         int
+	ErrorBreakdown map[ErrorType]int
+	SuccessRate    float64 // percentage
 }
 
 type QueryResult struct {
-	Latency time.Duration
-	Error   error
+	Latency    time.Duration
+	Error      error
+	ErrorType  ErrorType
 }
 
-// createZillizClient creates a Zilliz Cloud client with API key authentication
-func createZillizClient(apiKey, databaseURL string) (client.Client, error) {
+// CreateZillizClient creates a Zilliz Cloud client with API key authentication
+func CreateZillizClient(apiKey, databaseURL string) (client.Client, error) {
 	ctx := context.Background()
 
 	// Try the newer client.NewClient approach first
@@ -75,7 +99,7 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 	return NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricTypeStr, 10)
 }
 
-// calculateOptimalConnections calculates the number of connections needed based on target QPS
+// CalculateOptimalConnections calculates the number of connections needed based on target QPS
 // Formula: connections = (QPS × expected_latency_ms) / 1000 × multiplier
 // This ensures each connection isn't overwhelmed and can handle concurrent requests
 //
@@ -93,7 +117,7 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 //   - 1000 QPS: ~113 connections
 //   - 5000 QPS: ~563 connections
 //   - 10000 QPS: ~1125 connections
-func calculateOptimalConnections(targetQPS int) (int, string) {
+func CalculateOptimalConnections(targetQPS int) (int, string) {
 	// Estimate based on typical Zilliz Cloud vector search latency
 	// Formula: (QPS * latency_ms) / 1000 gives concurrent requests needed
 	// Then multiply by 1.5x to account for connection overhead and headroom
@@ -121,6 +145,11 @@ func calculateOptimalConnections(targetQPS int) (int, string) {
 
 func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vectorDim int,
 	metricTypeStr string, numConnections int) (*LoadTester, error) {
+	return NewLoadTesterWithOptions(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections, 10, "", []string{"id"}, 1)
+}
+
+func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim int,
+	metricTypeStr string, numConnections int, topK int, filterExpr string, outputFields []string, searchLevel int) (*LoadTester, error) {
 	if numConnections < 1 {
 		numConnections = 1
 	}
@@ -131,7 +160,7 @@ func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vector
 	// Create multiple clients for connection pooling
 	clients := make([]client.Client, numConnections)
 	for i := 0; i < numConnections; i++ {
-		milvusClient, err := createZillizClient(apiKey, databaseURL)
+		milvusClient, err := CreateZillizClient(apiKey, databaseURL)
 		if err != nil {
 			// Clean up already created clients
 			for j := 0; j < i; j++ {
@@ -159,12 +188,27 @@ func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vector
 		return nil, fmt.Errorf("unsupported metric type: %s", metricTypeStr)
 	}
 
+	// Set defaults
+	if topK <= 0 {
+		topK = 10
+	}
+	if outputFields == nil || len(outputFields) == 0 {
+		outputFields = []string{"id"}
+	}
+	if searchLevel < 1 {
+		searchLevel = 1
+	}
+
 	return &LoadTester{
-		clients:    clients,
-		clientIdx:  0,
-		collection: collection,
-		vectorDim:  vectorDim,
-		metricType: metricType,
+		clients:      clients,
+		clientIdx:    0,
+		collection:   collection,
+		vectorDim:    vectorDim,
+		metricType:   metricType,
+		topK:         topK,
+		filterExpr:   filterExpr,
+		outputFields: outputFields,
+		searchLevel:  searchLevel,
 	}, nil
 }
 
@@ -182,7 +226,26 @@ func (lt *LoadTester) Close() {
 	}
 }
 
-func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration) (TestResult, error) {
+func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.Duration, warmupQueries int) (TestResult, error) {
+	// Warm-up phase: run a small number of queries to warm up connections and caches
+	if warmupQueries > 0 {
+		fmt.Printf("Warming up with %d queries...\n", warmupQueries)
+		warmupCtx, warmupCancel := context.WithTimeout(ctx, 60*time.Second)
+		defer warmupCancel()
+
+		for i := 0; i < warmupQueries; i++ {
+			result := lt.executeQuery(warmupCtx, i)
+			if result.Error != nil && i < 5 {
+				// Log first few errors during warmup
+				fmt.Printf("  Warmup query %d error: %v\n", i+1, result.Error)
+			}
+			if (i+1)%10 == 0 {
+				fmt.Printf("  Warmup progress: %d/%d queries\n", i+1, warmupQueries)
+			}
+		}
+		fmt.Printf("Warmup complete\n\n")
+	}
+
 	// Calculate interval between requests to achieve exact target QPS
 	interval := time.Second / time.Duration(targetQPS)
 
@@ -361,6 +424,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	var latencies []float64
 	errors := 0
 	firstError := error(nil)
+	errorBreakdown := make(map[ErrorType]int)
 
 	for _, result := range allResults {
 		if result.Error != nil {
@@ -368,6 +432,9 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 			if firstError == nil {
 				firstError = result.Error
 			}
+			// Categorize error
+			errorType := categorizeError(result.Error)
+			errorBreakdown[errorType]++
 			continue
 		}
 		latencies = append(latencies, float64(result.Latency.Milliseconds()))
@@ -394,6 +461,8 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		avgLatency = sum / float64(len(latencies))
 	}
 
+	p50 := calculatePercentile(latencies, 50)
+	p90 := calculatePercentile(latencies, 90)
 	p95 := calculatePercentile(latencies, 95)
 	p99 := calculatePercentile(latencies, 99)
 
@@ -436,9 +505,20 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	actualQPS := float64(len(latencies)) / elapsed.Seconds()
 	completionRate := (actualQPS / float64(targetQPS)) * 100.0 // Percentage of target QPS achieved
+	successRate := float64(len(latencies)) / float64(totalFired) * 100.0
+	
 	fmt.Printf("Fired: %d queries | Completed: %d queries in %v\n", totalFired, len(latencies), elapsed)
-	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS (%.1f%% of target) | Errors: %d\n",
-		targetQPS, actualQPS, completionRate, errors)
+	fmt.Printf("Fired at: %d QPS | Completed at: %.2f QPS (%.1f%% of target) | Errors: %d (%.2f%% success rate)\n",
+		targetQPS, actualQPS, completionRate, errors, successRate)
+	
+	// Print error breakdown if there are errors
+	if errors > 0 {
+		fmt.Printf("\nError Breakdown:\n")
+		for errType, count := range errorBreakdown {
+			percentage := float64(count) / float64(errors) * 100.0
+			fmt.Printf("  - %s errors: %d (%.1f%%)\n", errType, count, percentage)
+		}
+	}
 
 	// Warn if we're significantly below target QPS
 	if actualQPS < float64(targetQPS)*0.8 {
@@ -457,11 +537,18 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 	}
 
 	return TestResult{
-		QPS:          targetQPS,
-		P95Latency:   p95,
-		P99Latency:   p99,
-		TotalQueries: len(latencies),
-		Errors:       errors,
+		QPS:            targetQPS,
+		P50Latency:     p50,
+		P90Latency:     p90,
+		P95Latency:     p95,
+		P99Latency:     p99,
+		MinLatency:     min,
+		MaxLatency:     max,
+		AvgLatency:     avgLatency,
+		TotalQueries:   len(latencies),
+		Errors:         errors,
+		ErrorBreakdown: errorBreakdown,
+		SuccessRate:    successRate,
 	}, nil
 }
 
@@ -480,6 +567,27 @@ func (e *EmptySearchParam) AddRangeFilter(rangeFilter float64) {
 	// Not used
 }
 
+// SearchParamWithLevel implements SearchParam interface with configurable search level
+type SearchParamWithLevel struct {
+	Level int
+}
+
+func (s *SearchParamWithLevel) Params() map[string]interface{} {
+	params := make(map[string]interface{})
+	if s.Level >= 0 {
+		params["level"] = s.Level
+	}
+	return params
+}
+
+func (s *SearchParamWithLevel) AddRadius(radius float64) {
+	// Not used
+}
+
+func (s *SearchParamWithLevel) AddRangeFilter(rangeFilter float64) {
+	// Not used
+}
+
 func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResult {
 	// Generate a random query vector
 	queryVector := generateRandomVector(lt.vectorDim)
@@ -487,32 +595,38 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	// Measure latency for the search operation
 	searchStart := time.Now()
 
-	// Execute search with empty search params (defaults to level 1 for latency optimization)
-	emptyParams := &EmptySearchParam{}
+	// Create search params with configured search level
+	searchParams := &SearchParamWithLevel{
+		Level: lt.searchLevel,
+	}
+
+	// Execute search with configured parameters
 	_, err := lt.getClient().Search(
 		ctx,
 		lt.collection,
-		[]string{},     // partition names (empty for all partitions)
-		"",             // expr (empty for no filter)
-		[]string{"id"}, // output fields - request "id" field
+		[]string{},        // partition names (empty for all partitions)
+		lt.filterExpr,      // expr (filter expression if configured)
+		lt.outputFields,    // output fields
 		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",      // vector field name
-		lt.metricType, // metric type
-		10,            // topK
-		emptyParams,   // empty search params - defaults to level 1
-	)
+		"vector",           // vector field name
+		lt.metricType,      // metric type
+		lt.topK,            // topK
+		searchParams,       // search params with level
+	) // opts parameter is optional and not used
 
 	latency := time.Since(searchStart)
 
 	if err != nil {
 		return QueryResult{
-			Latency: latency,
-			Error:   err,
+			Latency:   latency,
+			Error:     err,
+			ErrorType: categorizeError(err),
 		}
 	}
 
 	return QueryResult{
-		Latency: latency,
+		Latency:   latency,
+		ErrorType: ErrorTypeUnknown, // No error
 	}
 }
 
@@ -604,12 +718,59 @@ func calculatePercentile(sortedData []float64, percentile int) float64 {
 	return sortedData[lower]*(1-weight) + sortedData[upper]*weight
 }
 
+// categorizeError categorizes an error into one of the error types
+func categorizeError(err error) ErrorType {
+	if err == nil {
+		return ErrorTypeUnknown
+	}
+
+	errStr := err.Error()
+	errStrLower := strings.ToLower(errStr)
+
+	// Check for timeout errors
+	if strings.Contains(errStrLower, "timeout") ||
+		strings.Contains(errStrLower, "deadline exceeded") ||
+		strings.Contains(errStrLower, "context deadline") {
+		return ErrorTypeTimeout
+	}
+
+	// Check for network errors
+	if strings.Contains(errStrLower, "connection") ||
+		strings.Contains(errStrLower, "network") ||
+		strings.Contains(errStrLower, "refused") ||
+		strings.Contains(errStrLower, "unreachable") ||
+		strings.Contains(errStrLower, "no such host") {
+		return ErrorTypeNetwork
+	}
+
+	// Check for API errors (rate limit, authentication, invalid request)
+	if strings.Contains(errStrLower, "rate limit") ||
+		strings.Contains(errStrLower, "authentication") ||
+		strings.Contains(errStrLower, "unauthorized") ||
+		strings.Contains(errStrLower, "forbidden") ||
+		strings.Contains(errStrLower, "invalid") ||
+		strings.Contains(errStrLower, "not found") ||
+		strings.Contains(errStrLower, "collection") {
+		return ErrorTypeAPI
+	}
+
+	// Check for SDK/protobuf errors
+	if strings.Contains(errStrLower, "protobuf") ||
+		strings.Contains(errStrLower, "marshal") ||
+		strings.Contains(errStrLower, "unmarshal") ||
+		strings.Contains(errStrLower, "serialization") {
+		return ErrorTypeSDK
+	}
+
+	return ErrorTypeUnknown
+}
+
 // SeedDatabase seeds the database with the specified number of vectors
 func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVectors int) error {
 	ctx := context.Background()
 
 	// Create client
-	milvusClient, err := createZillizClient(apiKey, databaseURL)
+	milvusClient, err := CreateZillizClient(apiKey, databaseURL)
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
