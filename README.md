@@ -34,23 +34,20 @@ go build -o zilliz-loadtest ./cmd/zilliz-loadtest
 
 1. **Create a configuration file** (recommended for easier use):
    
-   The tool will automatically look for config files in these locations (in order):
-   - `./config.yaml` (current directory)
-   - `./configs/config.yaml` (configs subdirectory)
-   - `./zilliz-loadtest.yaml` (current directory)
-   - `~/.zilliz-loadtest.yaml` (home directory)
+   The tool automatically looks for the config file at `./configs/config.yaml` (relative to where you run the command).
    
-   **Recommended approach:**
+   **Setup:**
    ```bash
-   # Copy the example config to one of the supported locations
+   # Copy the example config to the required location
    cp configs/config.yaml.example configs/config.yaml
-   # OR
-   cp configs/config.yaml.example ./config.yaml
-   # OR
-   cp configs/config.yaml.example ~/.zilliz-loadtest.yaml
    
    # Edit the config file with your API key and database URL
-   # Note: config.yaml is in .gitignore for security - it contains sensitive credentials
+   # Note: configs/config.yaml is in .gitignore for security - it contains sensitive credentials
+   ```
+   
+   You can also specify a custom config path using the `--config` flag:
+   ```bash
+   ./zilliz-loadtest --config /path/to/custom/config.yaml
    ```
 
 2. **Or use environment variables**:
@@ -82,32 +79,31 @@ go build -o zilliz-loadtest ./cmd/zilliz-loadtest
 
 ### Configuration File
 
-**Important:** Configuration files contain sensitive credentials (API keys, database URLs) and are automatically excluded from git via `.gitignore`. Never commit your `config.yaml` file to version control.
+**Important:** Configuration files contain sensitive credentials (API keys, database URLs) and are automatically excluded from git via `.gitignore`. Never commit your `configs/config.yaml` file to version control.
 
-The tool automatically searches for configuration files in the following locations (in order of priority):
-
-1. `./config.yaml` - Current working directory
-2. `./configs/config.yaml` - Configs subdirectory (recommended for project-specific configs)
-3. `./zilliz-loadtest.yaml` - Current working directory (alternative name)
-4. `~/.zilliz-loadtest.yaml` - Home directory (recommended for user-wide configs)
+The tool automatically looks for the configuration file at `./configs/config.yaml` (relative to where you run the command).
 
 **To create your config file:**
 
 ```bash
-# Option 1: In the configs subdirectory (recommended for project-specific configs)
+# Copy the example config to the required location
 cp configs/config.yaml.example configs/config.yaml
+
 # Edit configs/config.yaml with your credentials
-
-# Option 2: In the current directory
-cp configs/config.yaml.example ./config.yaml
-# Edit config.yaml with your credentials
-
-# Option 3: In your home directory (recommended for user-wide configs)
-cp configs/config.yaml.example ~/.zilliz-loadtest.yaml
-# Edit ~/.zilliz-loadtest.yaml with your credentials
+# - Set your api_key
+# - Set your database_url
+# - Configure other settings as needed
 ```
 
-**Note:** The example config file (`configs/config.yaml.example`) is safe to commit to git as it contains no real credentials. Your actual `config.yaml` file is automatically ignored by git.
+**Custom config path:**
+
+You can specify a different config file location using the `--config` flag:
+
+```bash
+./zilliz-loadtest --config /path/to/custom/config.yaml
+```
+
+**Note:** The example config file (`configs/config.yaml.example`) is safe to commit to git as it contains no real credentials. Your actual `configs/config.yaml` file is automatically ignored by git.
 
 **Example config.yaml:**
 ```yaml

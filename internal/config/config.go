@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -72,20 +71,10 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// Try to load from config file
 	if configPath == "" {
-		// Try default locations
-		homeDir, _ := os.UserHomeDir()
-		defaultPaths := []string{
-			"./config.yaml",
-			"./configs/config.yaml",
-			"./zilliz-loadtest.yaml",
-			filepath.Join(homeDir, ".zilliz-loadtest.yaml"),
-		}
-
-		for _, path := range defaultPaths {
-			if _, err := os.Stat(path); err == nil {
-				configPath = path
-				break
-			}
+		// Only look in configs/config.yaml
+		defaultPath := "./configs/config.yaml"
+		if _, err := os.Stat(defaultPath); err == nil {
+			configPath = defaultPath
 		}
 	}
 
