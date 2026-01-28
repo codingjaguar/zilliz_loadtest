@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"zilliz-loadtest/internal/mocks"
+
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
-	"zilliz-loadtest/internal/mocks"
 )
 
 // createTestLoadTester creates a LoadTester with mock clients for testing
@@ -60,10 +61,10 @@ func TestCategorizeError(t *testing.T) {
 
 func TestCalculatePercentile(t *testing.T) {
 	tests := []struct {
-		name      string
-		data      []float64
+		name       string
+		data       []float64
 		percentile int
-		expected  float64
+		expected   float64
 	}{
 		{"empty data", []float64{}, 95, 0},
 		{"single value P50", []float64{10.0}, 50, 10.0},
@@ -180,25 +181,6 @@ func TestSearchParamWithLevel(t *testing.T) {
 	}
 }
 
-func TestEmptySearchParam(t *testing.T) {
-	param := &EmptySearchParam{}
-	params := param.Params()
-
-	if params == nil {
-		t.Error("EmptySearchParam.Params() returned nil")
-	}
-
-	if len(params) != 0 {
-		t.Errorf("EmptySearchParam.Params() length = %d, want 0", len(params))
-	}
-}
-
-func TestEmptySearchParamMethods(t *testing.T) {
-	param := &EmptySearchParam{}
-	param.AddRadius(0.5)
-	param.AddRangeFilter(0.5)
-}
-
 func TestSearchParamWithLevelMethods(t *testing.T) {
 	param := &SearchParamWithLevel{Level: 3}
 	param.AddRadius(0.5)
@@ -211,14 +193,14 @@ func TestLoadTesterGetClient(t *testing.T) {
 	mockClient2 := &mocks.MockClient{}
 
 	lt := &LoadTester{
-		clients:    []client.Client{mockClient1, mockClient2},
-		clientIdx:  0,
-		collection: "test",
-		vectorDim:  768,
-		metricType: entity.L2,
-		topK:       10,
+		clients:      []client.Client{mockClient1, mockClient2},
+		clientIdx:    0,
+		collection:   "test",
+		vectorDim:    768,
+		metricType:   entity.L2,
+		topK:         10,
 		outputFields: []string{"id"},
-		searchLevel: 1,
+		searchLevel:  1,
 	}
 
 	client1 := lt.getClient()

@@ -394,7 +394,6 @@ zilliz-loadtest/
 ├── cmd/zilliz-loadtest/
 │   ├── main.go          # CLI interface and orchestration
 │   ├── flags.go         # Command-line flag parsing
-│   ├── helpers.go       # Helper functions
 │   └── compare.go       # Test result comparison
 ├── internal/
 │   ├── loadtest/        # Core load testing logic

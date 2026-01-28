@@ -108,47 +108,14 @@ func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metric
 }
 
 // CalculateOptimalConnections calculates the number of connections needed based on target QPS
-// Formula: connections = (QPS × expected_latency_ms) / 1000 × multiplier
-// This ensures each connection isn't overwhelmed and can handle concurrent requests
-//
-// We estimate the number of connections based on the target QPS and what we know about
-// Zilliz Cloud behavior. This is an educated guess - actual latency may vary based on
-// collection size, index type, server load, and network conditions.
-//
-// Default formula uses:
-//   - Expected latency: 75ms (conservative estimate for vector search on Zilliz Cloud)
-//   - Multiplier: 1.5x (accounts for connection overhead and headroom)
-//
-// Default connections for common QPS levels:
-//   - 100 QPS: ~12 connections
-//   - 500 QPS: ~56 connections
-//   - 1000 QPS: ~113 connections
-//   - 5000 QPS: ~563 connections
-//   - 10000 QPS: ~1125 connections
+// using default expected latency and multiplier. See CalculateOptimalConnectionsWithParams for formula.
 func CalculateOptimalConnections(targetQPS int) (int, string) {
-	// Estimate based on typical Zilliz Cloud vector search latency
-	// Formula: (QPS * latency_ms) / 1000 gives concurrent requests needed
-	// Then multiply by multiplier to account for connection overhead and headroom
-	baseConnections := float64(targetQPS) * ExpectedLatencyMs / 1000.0
-	connections := int(baseConnections * ConnectionMultiplier)
-
-	// Enforce reasonable bounds
-	if connections < MinConnections {
-		connections = MinConnections
-	}
-
-	if connections > MaxConnections {
-		connections = MaxConnections
-	}
-
-	explanation := fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections (default)",
-		targetQPS, ExpectedLatencyMs, ConnectionMultiplier, connections)
-
-	return connections, explanation
+	return CalculateOptimalConnectionsWithParams(ExpectedLatencyMs, ConnectionMultiplier, targetQPS)
 }
 
-// CalculateOptimalConnectionsWithParams is like CalculateOptimalConnections but uses the given
-// expectedLatencyMs and connectionMultiplier (e.g. from config). Use 0 for either to fall back to defaults.
+// CalculateOptimalConnectionsWithParams returns connections for target QPS using:
+// (QPS × expectedLatencyMs) / 1000 × connectionMultiplier, clamped to [MinConnections, MaxConnections].
+// Use 0 for expectedLatencyMs or connectionMultiplier to fall back to package defaults.
 func CalculateOptimalConnectionsWithParams(expectedLatencyMs, connectionMultiplier float64, targetQPS int) (int, string) {
 	if expectedLatencyMs <= 0 {
 		expectedLatencyMs = ExpectedLatencyMs
@@ -164,9 +131,8 @@ func CalculateOptimalConnectionsWithParams(expectedLatencyMs, connectionMultipli
 	if connections > MaxConnections {
 		connections = MaxConnections
 	}
-	explanation := fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections",
+	return connections, fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections",
 		targetQPS, expectedLatencyMs, connectionMultiplier, connections)
-	return connections, explanation
 }
 
 func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vectorDim int,
@@ -214,21 +180,12 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 		clients[i] = milvusClient
 	}
 
-	// Parse metric type
-	var metricType entity.MetricType
-	switch metricTypeStr {
-	case "L2":
-		metricType = entity.L2
-	case "IP":
-		metricType = entity.IP
-	case "COSINE":
-		metricType = entity.COSINE
-	default:
-		// Clean up clients
+	metricType, err := ParseMetricType(metricTypeStr)
+	if err != nil {
 		for _, c := range clients {
 			c.Close()
 		}
-		return nil, fmt.Errorf("unsupported metric type: %s. Supported types are: L2, IP, COSINE", metricTypeStr)
+		return nil, err
 	}
 
 	// Set defaults
@@ -408,21 +365,6 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		ErrorBreakdown: stats.errorBreakdown,
 		SuccessRate:    successRate,
 	}, nil
-}
-
-// EmptySearchParam implements SearchParam interface with no parameters (defaults to level 1)
-type EmptySearchParam struct{}
-
-func (e *EmptySearchParam) Params() map[string]interface{} {
-	return make(map[string]interface{})
-}
-
-func (e *EmptySearchParam) AddRadius(radius float64) {
-	// Not used
-}
-
-func (e *EmptySearchParam) AddRangeFilter(rangeFilter float64) {
-	// Not used
 }
 
 // SearchParamWithLevel implements SearchParam interface with configurable search level
