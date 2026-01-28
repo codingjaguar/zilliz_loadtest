@@ -9,21 +9,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"zilliz-loadtest/internal/logger"
+
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
-	"zilliz-loadtest/internal/logger"
 )
 
 type LoadTester struct {
-	clients         []client.Client // Multiple clients for connection pooling
-	clientIdx       int64           // Atomic counter for round-robin client selection
-	collection      string
-	vectorDim       int
-	metricType      entity.MetricType
-	topK            int
-	filterExpr      string
-	outputFields    []string
-	searchLevel     int
+	clients      []client.Client // Multiple clients for connection pooling
+	clientIdx    int64           // Atomic counter for round-robin client selection
+	collection   string
+	vectorDim    int
+	metricType   entity.MetricType
+	topK         int
+	filterExpr   string
+	outputFields []string
+	searchLevel  int
 }
 
 // ErrorType categorizes different types of errors
@@ -53,9 +54,9 @@ type TestResult struct {
 }
 
 type QueryResult struct {
-	Latency    time.Duration
-	Error      error
-	ErrorType  ErrorType
+	Latency   time.Duration
+	Error     error
+	ErrorType ErrorType
 }
 
 // CreateZillizClient creates a Zilliz Cloud client with API key authentication
@@ -146,6 +147,28 @@ func CalculateOptimalConnections(targetQPS int) (int, string) {
 	return connections, explanation
 }
 
+// CalculateOptimalConnectionsWithParams is like CalculateOptimalConnections but uses the given
+// expectedLatencyMs and connectionMultiplier (e.g. from config). Use 0 for either to fall back to defaults.
+func CalculateOptimalConnectionsWithParams(expectedLatencyMs, connectionMultiplier float64, targetQPS int) (int, string) {
+	if expectedLatencyMs <= 0 {
+		expectedLatencyMs = ExpectedLatencyMs
+	}
+	if connectionMultiplier <= 0 {
+		connectionMultiplier = ConnectionMultiplier
+	}
+	baseConnections := float64(targetQPS) * expectedLatencyMs / 1000.0
+	connections := int(baseConnections * connectionMultiplier)
+	if connections < MinConnections {
+		connections = MinConnections
+	}
+	if connections > MaxConnections {
+		connections = MaxConnections
+	}
+	explanation := fmt.Sprintf("Formula: (%d QPS × %.0fms latency) / 1000 × %.1fx = %d connections",
+		targetQPS, expectedLatencyMs, connectionMultiplier, connections)
+	return connections, explanation
+}
+
 func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vectorDim int,
 	metricTypeStr string, numConnections int) (*LoadTester, error) {
 	return NewLoadTesterWithOptions(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections, 10, "", []string{"id"}, 1)
@@ -177,7 +200,7 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 	clients := make([]client.Client, numConnections)
 	retryConfig := DefaultRetryConfig()
 	retryConfig.MaxRetries = 2 // Fewer retries for connection creation
-	
+
 	ctx := context.Background()
 	for i := 0; i < numConnections; i++ {
 		milvusClient, err := RetryClientCreation(ctx, apiKey, databaseURL, retryConfig)
@@ -258,8 +281,13 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		return TestResult{}, fmt.Errorf("duration too short: %v (minimum: 1s). Tests shorter than 1 second may not provide accurate results", duration)
 	}
 
+	logger.Info("Load test started", "target_qps", targetQPS, "duration", duration, "warmup_queries", warmupQueries)
 	// Warm-up phase
+	if warmupQueries > 0 {
+		logger.Info("Warm-up phase", "queries", warmupQueries)
+	}
 	lt.runWarmup(ctx, warmupQueries)
+	logger.Info("Test phase started", "firing_queries_at", fmt.Sprintf("%d QPS", targetQPS))
 
 	// Setup test execution
 	interval := time.Second / time.Duration(targetQPS)
@@ -434,14 +462,14 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 	_, err := lt.getClient().Search(
 		ctx,
 		lt.collection,
-		[]string{},        // partition names (empty for all partitions)
-		lt.filterExpr,      // expr (filter expression if configured)
-		lt.outputFields,    // output fields
+		[]string{},      // partition names (empty for all partitions)
+		lt.filterExpr,   // expr (filter expression if configured)
+		lt.outputFields, // output fields
 		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",           // vector field name
-		lt.metricType,      // metric type
-		lt.topK,            // topK
-		searchParams,       // search params with level
+		"vector",      // vector field name
+		lt.metricType, // metric type
+		lt.topK,       // topK
+		searchParams,  // search params with level
 	) // opts parameter is optional and not used
 
 	latency := time.Since(searchStart)
@@ -596,3 +624,24 @@ func categorizeError(err error) ErrorType {
 }
 
 // SeedDatabase is now in seed.go
+
+// VerifyRowCount uses the SDK to get collection row count (ping). Returns actual row count or error.
+func VerifyRowCount(apiKey, databaseURL, collection string) (int64, error) {
+	ctx := context.Background()
+	milvusClient, err := CreateZillizClient(apiKey, databaseURL)
+	if err != nil {
+		return 0, fmt.Errorf("create client: %w", err)
+	}
+	defer milvusClient.Close()
+	stats, err := milvusClient.GetCollectionStatistics(ctx, collection)
+	if err != nil {
+		return 0, fmt.Errorf("get collection statistics: %w", err)
+	}
+	var rowCount int64
+	if s, ok := stats["row_count"]; ok {
+		fmt.Sscanf(s, "%d", &rowCount)
+	} else if s, ok := stats["rowCount"]; ok {
+		fmt.Sscanf(s, "%d", &rowCount)
+	}
+	return rowCount, nil
+}

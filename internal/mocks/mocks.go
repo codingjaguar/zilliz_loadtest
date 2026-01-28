@@ -16,6 +16,11 @@ type MockClient struct {
 	DescribeCollectionFunc  func(ctx context.Context, collectionName string) (*entity.Collection, error)
 	GetCollectionStatisticsFunc func(ctx context.Context, collectionName string) (map[string]string, error)
 	DescribeIndexFunc      func(ctx context.Context, collectionName string, fieldName string) ([]entity.Index, error)
+	HasCollectionFunc      func(ctx context.Context, collectionName string) (bool, error)
+	CreateCollectionFunc    func(ctx context.Context, schema *entity.Schema, shardsNum int32, opts ...client.CreateCollectionOption) error
+	CreateIndexFunc         func(ctx context.Context, collectionName string, fieldName string, idx entity.Index, async bool, opts ...client.IndexOption) error
+	GetIndexStateFunc       func(ctx context.Context, collectionName string, fieldName string, opts ...client.IndexOption) (entity.IndexState, error)
+	ListCollectionsFunc     func(ctx context.Context) ([]*entity.Collection, error)
 	CloseFunc               func() error
 }
 
@@ -53,7 +58,12 @@ func (m *MockClient) DescribeIndex(ctx context.Context, collectionName string, f
 	}
 	return []entity.Index{}, nil
 }
-func (m *MockClient) GetIndexState(ctx context.Context, collectionName string, fieldName string, opts ...client.IndexOption) (entity.IndexState, error) { return 0, nil }
+func (m *MockClient) GetIndexState(ctx context.Context, collectionName string, fieldName string, opts ...client.IndexOption) (entity.IndexState, error) {
+	if m.GetIndexStateFunc != nil {
+		return m.GetIndexStateFunc(ctx, collectionName, fieldName, opts...)
+	}
+	return 0, nil
+}
 
 func (m *MockClient) Close() error {
 	if m.CloseFunc != nil {
@@ -72,12 +82,22 @@ func (m *MockClient) AlterIndex(ctx context.Context, collectionName string, fiel
 func (m *MockClient) AlterUser(ctx context.Context, username string, opts ...interface{}) error { return nil }
 func (m *MockClient) CheckHealth(ctx context.Context) error { return nil }
 func (m *MockClient) CreateAlias(ctx context.Context, alias string, collectionName string) error { return nil }
-func (m *MockClient) CreateCollection(ctx context.Context, schema *entity.Schema, shardsNum int32, opts ...client.CreateCollectionOption) error { return nil }
+func (m *MockClient) CreateCollection(ctx context.Context, schema *entity.Schema, shardsNum int32, opts ...client.CreateCollectionOption) error {
+	if m.CreateCollectionFunc != nil {
+		return m.CreateCollectionFunc(ctx, schema, shardsNum, opts...)
+	}
+	return nil
+}
 func (m *MockClient) NewCollection(ctx context.Context, collName string, dimension int64, opts ...client.CreateCollectionOption) error { return nil }
 func (m *MockClient) CreateCredential(ctx context.Context, username string, password string) error { return nil }
 func (m *MockClient) CreateDatabase(ctx context.Context, dbName string) error { return nil }
 func (m *MockClient) DropDatabase(ctx context.Context, dbName string) error { return nil }
-func (m *MockClient) CreateIndex(ctx context.Context, collectionName string, fieldName string, idx entity.Index, async bool, opts ...client.IndexOption) error { return nil }
+func (m *MockClient) CreateIndex(ctx context.Context, collectionName string, fieldName string, idx entity.Index, async bool, opts ...client.IndexOption) error {
+	if m.CreateIndexFunc != nil {
+		return m.CreateIndexFunc(ctx, collectionName, fieldName, idx, async, opts...)
+	}
+	return nil
+}
 func (m *MockClient) CreatePartition(ctx context.Context, collectionName string, partitionName string) error { return nil }
 func (m *MockClient) CreateRole(ctx context.Context, roleName string) error { return nil }
 func (m *MockClient) CreateUser(ctx context.Context, username string, password string) error { return nil }
@@ -97,10 +117,20 @@ func (m *MockClient) GetLoadingProgress(ctx context.Context, collectionName stri
 func (m *MockClient) GetPersistentSegmentInfo(ctx context.Context, collectionName string) ([]*entity.Segment, error) { return nil, nil }
 func (m *MockClient) GetQuerySegmentInfo(ctx context.Context, collectionName string) ([]*entity.Segment, error) { return nil, nil }
 func (m *MockClient) GetReplicas(ctx context.Context, collectionName string) ([]*entity.ReplicaGroup, error) { return nil, nil }
-func (m *MockClient) HasCollection(ctx context.Context, collectionName string) (bool, error) { return false, nil }
+func (m *MockClient) HasCollection(ctx context.Context, collectionName string) (bool, error) {
+	if m.HasCollectionFunc != nil {
+		return m.HasCollectionFunc(ctx, collectionName)
+	}
+	return false, nil
+}
 func (m *MockClient) HasPartition(ctx context.Context, collectionName string, partitionName string) (bool, error) { return false, nil }
 func (m *MockClient) ListAliases(ctx context.Context, collectionName string) ([]string, error) { return nil, nil }
-func (m *MockClient) ListCollections(ctx context.Context) ([]*entity.Collection, error) { return nil, nil }
+func (m *MockClient) ListCollections(ctx context.Context) ([]*entity.Collection, error) {
+	if m.ListCollectionsFunc != nil {
+		return m.ListCollectionsFunc(ctx)
+	}
+	return nil, nil
+}
 func (m *MockClient) ListCredentialUsers(ctx context.Context) ([]string, error) { return nil, nil }
 func (m *MockClient) ListCredUsers(ctx context.Context) ([]string, error) { return nil, nil }
 func (m *MockClient) ListDatabases(ctx context.Context) ([]entity.Database, error) { return nil, nil }

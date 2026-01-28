@@ -18,6 +18,12 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 
 // SeedDatabaseWithBatchSize seeds the database with a custom batch size
 func SeedDatabaseWithBatchSize(apiKey, databaseURL, collection string, vectorDim, totalVectors, batchSize int) error {
+	return SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection, vectorDim, totalVectors, batchSize, entity.L2, false)
+}
+
+// SeedDatabaseWithBatchSizeAndMetric seeds the database with a custom batch size and metric type
+// If skipCollectionCreation is true, it will skip automatic collection creation and only verify the collection exists
+func SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection string, vectorDim, totalVectors, batchSize int, metricType entity.MetricType, skipCollectionCreation bool) error {
 	// Validate inputs
 	if apiKey == "" {
 		return fmt.Errorf("API key is required for seed operation")
@@ -50,6 +56,24 @@ func SeedDatabaseWithBatchSize(apiKey, databaseURL, collection string, vectorDim
 		return fmt.Errorf("failed to create client after retries: %w", err)
 	}
 	defer milvusClient.Close()
+
+	// Ensure collection exists with correct schema and index
+	collectionConfig := CollectionConfig{
+		CollectionName: collection,
+		VectorDim:      vectorDim,
+		MetricType:     metricType,
+		IndexType:      "AUTOINDEX", // Default for Zilliz Cloud
+		ShardNum:        1,           // Default to 1 shard
+	}
+
+	if skipCollectionCreation {
+		logger.Info("Skipping automatic collection creation - verifying collection exists", "collection", collection)
+	} else {
+		logger.Info("Ensuring collection exists with correct schema", "collection", collection)
+	}
+	if err := EnsureCollectionExists(ctx, milvusClient, collectionConfig, skipCollectionCreation); err != nil {
+		return fmt.Errorf("failed to ensure collection exists: %w", err)
+	}
 
 	totalBatches := (totalVectors + batchSize - 1) / batchSize
 

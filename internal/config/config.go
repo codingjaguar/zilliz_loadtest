@@ -33,8 +33,6 @@ type Config struct {
 	// Logging and observability
 	LogLevel        string `yaml:"log_level"`
 	LogFormat       string `yaml:"log_format"`
-	MetricsEnabled  bool   `yaml:"metrics_enabled"`
-	MetricsPort     int    `yaml:"metrics_port"`
 	OutputDirectory string `yaml:"output_directory"`
 	MaxRetries      int    `yaml:"max_retries"`
 	Timeout         string `yaml:"timeout"`
@@ -63,8 +61,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Set logging defaults
 	config.LogLevel = "INFO"
 	config.LogFormat = "text"
-	config.MetricsEnabled = false
-	config.MetricsPort = 9090
 	config.OutputDirectory = ""
 	config.MaxRetries = 3
 	config.Timeout = "30s"

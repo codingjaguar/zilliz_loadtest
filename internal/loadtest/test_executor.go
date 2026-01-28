@@ -2,6 +2,7 @@ package loadtest
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,10 +49,12 @@ func (ts *testState) startStatusReporter(testCtx context.Context) {
 				elapsed := time.Since(ts.startTime)
 				if elapsed.Seconds() > 0 {
 					currentQPS := float64(completed) / elapsed.Seconds()
-					logger.Info("Test status",
-						"elapsed_seconds", elapsed.Round(time.Second).Seconds(),
-						"queries_fired", fired,
+					elapsedSec := int(elapsed.Round(time.Second).Seconds())
+					logger.Info("Progress",
+						"message", fmt.Sprintf("%ds elapsed, %d/%d queries completed (~%.0f QPS)", elapsedSec, completed, fired, currentQPS),
+						"elapsed_seconds", elapsedSec,
 						"queries_completed", completed,
+						"queries_fired", fired,
 						"current_qps", currentQPS)
 				}
 			}

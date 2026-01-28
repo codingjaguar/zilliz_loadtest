@@ -15,6 +15,19 @@ default_duration: "30s"  # e.g., "30s", "1m", "5m"
 default_qps_levels: [100, 500, 1000]
 
 # Connection calculation settings
+# Used during load tests to decide how many concurrent connections to open per QPS level.
+# Formula: connections = (QPS × expected_latency_ms) / 1000 × connection_multiplier
+# (values are capped between 5 and 2000 connections).
+#
+# expected_latency_ms: Your typical or target search latency in milliseconds. Used to estimate
+#   how many queries can be in flight at once at a given QPS. Example: at 100 QPS and 75ms
+#   latency, you need roughly (100 × 75)/1000 = 7.5 concurrent requests. Use a value that
+#   matches your cluster (e.g. 50 for very fast, 100 for conservative). Default: 75.0
+#
+# connection_multiplier: Extra factor for headroom (connection overhead, latency variance).
+#   Higher = more connections, lower = fewer. Typical range 1.2–2.0. Default: 1.5
+#
+# Example: 100 QPS, 75ms latency, 1.5x → ~12 connections. 500 QPS → ~56 connections.
 connection_multiplier: 1.5
 expected_latency_ms: 75.0
 
@@ -33,8 +46,6 @@ seed_batch_size: 15000      # Batch size for seeding (default: 15,000)
 # Logging and observability
 log_level: "INFO"           # Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
 log_format: "text"          # Log format: text or json (default: text)
-metrics_enabled: false      # Enable metrics export (default: false)
-metrics_port: 9090          # Port for metrics endpoint (default: 9090)
 output_directory: ""        # Default export directory (default: current directory)
 max_retries: 3              # Maximum retries for failed operations (default: 3)
 timeout: "30s"              # Global timeout for operations (default: 30s)

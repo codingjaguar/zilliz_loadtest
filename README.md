@@ -17,7 +17,6 @@ A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configur
 - **Comprehensive Reporting**: Detailed results summary with error breakdowns
 - **Command-Line Interface**: Non-interactive mode with flags for automation and scripting
 - **Structured Logging**: JSON or text format logging with configurable levels
-- **Metrics Export**: Prometheus format and time-series CSV export
 - **Profiling Support**: CPU and memory profiling for performance analysis
 - **Retry Logic**: Automatic retry for transient errors with exponential backoff
 - **Input Validation**: Comprehensive validation with clear error messages
@@ -140,6 +139,12 @@ The tool supports both interactive and non-interactive modes. Use flags for auto
   --seed-vector-count 2000000 --seed-vector-dim 768 --seed-batch-size 15000
 ```
 
+**Seed Operation (Skip Collection Creation):**
+```bash
+./zilliz-loadtest --seed --api-key KEY --database-url URL --collection COLL \
+  --skip-collection-creation --seed-vector-count 2000000 --seed-vector-dim 768
+```
+
 **Load Test:**
 ```bash
 ./zilliz-loadtest --load-test --api-key KEY --database-url URL --collection COLL \
@@ -153,6 +158,23 @@ The tool supports both interactive and non-interactive modes. Use flags for auto
 ```
 
 Run `./zilliz-loadtest --help` for complete flag documentation.
+
+### Create a cluster and collection (Zilliz Cloud console)
+
+Create your cluster and collection in the [Zilliz Cloud console](https://cloud.zilliz.com) so they work with this CLI:
+
+1. **Create a cluster**  
+   In Zilliz Cloud, create a cluster (Performance-optimized or Capacity-optimized). Note the **public endpoint** (e.g. `https://xxx.aws-us-west-2.vectordb.zillizcloud.com:19530`). Set `database_url` in `configs/config.yaml` to this endpoint (with port).
+
+2. **Create a collection** that matches what the CLI expects:
+   - **Primary key**: A field named `id`, type Int64, **AutoID** enabled.
+   - **Vector field**: A field named `vector`, type Float Vector, dimension **768** (or match `default_vector_dim` / `seed_vector_dim` in your config).
+   - **Index**: Create an index on the `vector` field. Use **AUTOINDEX** on Zilliz Cloud. Set the metric type to **L2**, **IP**, or **COSINE** to match `default_metric_type` in your config.
+
+3. **Config**  
+   In `configs/config.yaml` set `api_key`, `database_url`, and `default_collection` to the collection name you created.
+
+After that, you can run the CLI to **seed** (e.g. 1M or 2M vectors) and **load test** against that collection.
 
 ## Usage
 
@@ -174,14 +196,23 @@ When you choose option 1, you will be prompted to enter:
 1. **API Key** (required): Your Zilliz Cloud API key (or use config/env)
 2. **Database URL** (required): Your Zilliz Cloud database URL (or use config/env)
 3. **Collection Name** (required): The collection to seed
-4. **Confirmation**: Confirm before starting the seed operation
+4. **Metric Type** (optional): L2, IP, or COSINE (defaults to config or L2)
+5. **Collection Creation**: Choose whether to automatically create the collection or skip (if you've created it manually in the Zilliz UI)
+6. **Confirmation**: Confirm before starting the seed operation
 
 The seed operation will:
-- Insert 2,000,000 vectors of 768 dimensions
+- **Check cluster readiness**: Verifies the cluster is ready before proceeding (if cluster is still spinning up, you'll get a helpful error message)
+- **Automatically create the collection** (if enabled) if it doesn't exist with:
+  - AutoID enabled primary key field (`id`)
+  - Vector field (`vector`) with the specified dimension
+  - Index on the vector field with the specified metric type (default: AUTOINDEX)
+- **Skip collection creation** (if enabled): Assumes the collection already exists and only verifies it
+- Insert vectors (default: 2,000,000 vectors of 768 dimensions)
 - Use batches of 15,000 vectors for efficient insertion
 - Display progress and insertion rate
-- Assume autoID is enabled (no primary key required)
-- Assume no scalar fields (only vector data)
+- If collection already exists, it will verify the schema matches and create the index if missing
+
+**Note**: If your cluster is still spinning up, you may see an error message indicating the cluster is not ready. Wait a few minutes for the cluster to become ready, then try again. Alternatively, you can create the collection manually in the Zilliz UI and use the skip option.
 
 ### Load Test
 
@@ -277,17 +308,23 @@ QPS    | P50    | P90    | P95    | P99    | Avg    | Min    | Max    | Errors |
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function inserts 2 million vectors of 768 dimensions:
+- **Seed Operation**: The seed function automatically creates the collection (if needed) and inserts vectors:
+  - **Automatic Collection Creation**: If the collection doesn't exist, it will be created with:
+    - Primary key field `id` with autoID enabled
+    - Vector field `vector` with the specified dimension
+    - Index on the vector field with AUTOINDEX type and the specified metric type (L2, IP, or COSINE)
+  - **Schema Verification**: If the collection exists, it verifies:
+    - Vector field exists and has the correct dimension
+    - Index exists on the vector field (creates it if missing)
+    - Metric type matches (warns if mismatch)
   - Batch size: 15,000 vectors per batch (~45MB, well under 64MB gRPC limit)
-  - Uses `Insert` API since autoID is enabled and no primary key is required
+  - Uses `Insert` API with autoID (no primary key values needed)
   - Provides real-time progress updates with ETA and performance metrics
   - Sequential processing to avoid overwhelming the server and reduce write errors
-- **AutoID**: The seed operation assumes autoID is enabled, so no primary key is required
-- **No Scalar Fields**: The seed operation only inserts vector data (no scalar fields)
-- **Collection Requirements**: Ensure your collection exists and is configured with:
-  - A vector field named "vector" with 768 dimensions
-  - AutoID enabled for the primary key
-  - Appropriate index created
+- **Default Values**: 
+  - 2,000,000 vectors of 768 dimensions (configurable via config file)
+  - Metric type: L2 (configurable via config file or prompt)
+  - Batch size: 15,000 (configurable via config file)
 
 ### Load Testing
 
@@ -372,7 +409,6 @@ zilliz-loadtest/
 │   ├── export/          # Result export functionality
 │   ├── validation/      # Pre-flight validation and input validation
 │   ├── logger/          # Structured logging
-│   ├── metrics/         # Metrics collection and export
 │   ├── profiling/       # CPU/memory profiling
 │   └── errors/          # Custom error types
 ├── configs/
@@ -390,12 +426,6 @@ The tool uses structured logging with configurable levels and formats:
 - **Log Levels**: DEBUG, INFO, WARN, ERROR
 - **Formats**: text (human-readable) or json (machine-readable)
 - **Configuration**: Set via config file or environment variables
-
-### Metrics Export
-
-Export metrics in multiple formats:
-- **Prometheus**: For integration with Prometheus/Grafana
-- **Time-series CSV**: For analysis in spreadsheets or custom tools
 
 ### Profiling
 
@@ -431,6 +461,5 @@ This is a template tool for customers. Feel free to customize it for your specif
 
 - Search parameters (topK, filters, search level)
 - Vector generation strategies
-- Additional metrics collection
 - Custom export formats
 - Integration with monitoring systems
