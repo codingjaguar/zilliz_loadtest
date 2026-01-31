@@ -158,8 +158,8 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 	if numConnections < 1 {
 		return nil, fmt.Errorf("number of connections must be at least 1, got %d", numConnections)
 	}
-	if numConnections > 100 {
-		return nil, fmt.Errorf("number of connections exceeds maximum of 100, got %d. Consider using connection pooling instead", numConnections)
+	if numConnections > MaxConnections {
+		return nil, fmt.Errorf("number of connections exceeds maximum of %d, got %d", MaxConnections, numConnections)
 	}
 
 	// Create multiple clients for connection pooling with retry
