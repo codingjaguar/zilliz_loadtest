@@ -63,7 +63,7 @@ func SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection string, 
 		VectorDim:      vectorDim,
 		MetricType:     metricType,
 		IndexType:      "AUTOINDEX", // Default for Zilliz Cloud
-		ShardNum:        1,           // Default to 1 shard
+		ShardNum:       1,           // Default to 1 shard
 	}
 
 	if skipCollectionCreation {
@@ -96,6 +96,14 @@ func SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection string, 
 	}
 
 	printSeedSummary(vectorsInserted, time.Since(startTime))
+
+	// After seeding, proactively load the collection so it is query-ready.
+	// Use a bounded timeout so we don't hang forever on very large collections.
+	loadCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if err := FlushAndLoadCollection(loadCtx, milvusClient, collection); err != nil {
+		return err
+	}
 	return nil
 }
 

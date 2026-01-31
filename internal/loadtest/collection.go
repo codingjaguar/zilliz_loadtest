@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"zilliz-loadtest/internal/logger"
+
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
-	"zilliz-loadtest/internal/logger"
 )
 
 // CollectionConfig holds configuration for creating a collection
@@ -71,7 +72,7 @@ func EnsureCollectionExists(ctx context.Context, milvusClient client.Client, con
 // checkClusterReadiness checks if the cluster is ready by attempting a simple operation
 func checkClusterReadiness(ctx context.Context, milvusClient client.Client) error {
 	logger.Info("Checking cluster readiness...")
-	
+
 	// Try to list collections as a health check
 	// This is a lightweight operation that will fail if the cluster isn't ready
 	_, err := milvusClient.ListCollections(ctx)
@@ -89,7 +90,7 @@ func checkClusterReadiness(ctx context.Context, milvusClient client.Client) erro
 		logger.Warn("ListCollections failed - this may indicate a permissions or configuration issue", "error", err)
 		// Don't fail here - let the actual operation fail with a clearer error
 	}
-	
+
 	logger.Info("Cluster is ready")
 	return nil
 }
@@ -311,4 +312,68 @@ func createVectorIndex(ctx context.Context, milvusClient client.Client, config C
 
 	logger.Info("Index creation initiated (may still be building)", "collection", config.CollectionName)
 	return nil
+}
+
+// FlushAndLoadCollection flushes pending inserts (best-effort) and loads the collection into query nodes.
+// This makes the collection query-ready immediately after seeding.
+func FlushAndLoadCollection(ctx context.Context, milvusClient client.Client, collectionName string) error {
+	// Flush is helpful after large inserts to ensure data is persisted/sealed.
+	// Some deployments may not require it; we treat flush errors as warnings and still attempt load.
+	logger.Info("Flushing collection after seeding", "collection", collectionName)
+	if err := milvusClient.Flush(ctx, collectionName, false); err != nil {
+		logger.Warn("Flush failed; continuing to load collection anyway", "collection", collectionName, "error", err)
+	}
+
+	logger.Info("Loading collection for serving", "collection", collectionName)
+	if err := milvusClient.LoadCollection(ctx, collectionName, false); err != nil {
+		return fmt.Errorf("failed to load collection '%s': %w", collectionName, err)
+	}
+
+	// Best-effort: wait for load state/progress if supported.
+	// (LoadCollection with async=false may already block, but SDK/server behavior can vary.)
+	const maxWait = 10 * time.Minute
+	deadline := time.Now().Add(maxWait)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var lastProgress int64 = -1
+	for {
+		// Respect caller cancellation.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while waiting for collection to load: %w", err)
+		}
+
+		state, stateErr := milvusClient.GetLoadState(ctx, collectionName, []string{})
+		if stateErr == nil && state == entity.LoadStateLoaded {
+			logger.Info("Collection loaded successfully", "collection", collectionName)
+			return nil
+		}
+
+		// Progress API is optional; ignore errors.
+		if progress, progErr := milvusClient.GetLoadingProgress(ctx, collectionName, []string{}); progErr == nil {
+			if progress != lastProgress {
+				lastProgress = progress
+				logger.Info("Collection loading progress", "collection", collectionName, "progress_percent", progress)
+			}
+			if progress >= 100 {
+				logger.Info("Collection loaded successfully (progress reached 100%)", "collection", collectionName)
+				return nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			// If we can't observe state/progress, don't hard-fail; LoadCollection already returned nil.
+			if stateErr != nil {
+				logger.Warn("Timed out waiting for load state; proceeding", "collection", collectionName, "error", stateErr)
+				return nil
+			}
+			return fmt.Errorf("timed out waiting for collection '%s' to load", collectionName)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for collection to load: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
