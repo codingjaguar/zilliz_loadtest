@@ -13,6 +13,7 @@ import (
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
+	"google.golang.org/grpc"
 )
 
 type LoadTester struct {
@@ -62,47 +63,90 @@ type QueryResult struct {
 	ErrorType ErrorType
 }
 
+// ConnectionTimeout is the timeout for establishing a connection to Zilliz Cloud
+const ConnectionTimeout = 5 * time.Second
+
 // CreateZillizClient creates a Zilliz Cloud client with API key authentication
 func CreateZillizClient(apiKey, databaseURL string) (client.Client, error) {
-	ctx := context.Background()
-
 	if apiKey == "" {
-		return nil, fmt.Errorf("API key is required but was empty")
+		return nil, fmt.Errorf("API key is required but was empty. Set api_key in config.yaml or use --api-key flag")
 	}
 	if databaseURL == "" {
-		return nil, fmt.Errorf("database URL is required but was empty")
+		return nil, fmt.Errorf("database URL is required but was empty. Set database_url in config.yaml or use --database-url flag")
 	}
 
-	// Try the newer client.NewClient approach first
-	milvusClient, err := client.NewClient(
-		ctx,
-		client.Config{
-			Address:       databaseURL,
-			APIKey:        apiKey,
-			EnableTLSAuth: true,
-		},
-	)
+	logger.Info("Connecting to Zilliz Cloud...", "url", databaseURL, "timeout", ConnectionTimeout)
 
-	// If that fails, try the alternative approach with NewGrpcClient
-	if err != nil {
-		milvusClient, err = client.NewGrpcClient(ctx, databaseURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create client: tried both NewClient and NewGrpcClient, last error: %w. Ensure the database URL is correct and accessible", err)
+	// Use goroutine + channel for explicit timeout since gRPC dial options may not work
+	type connectResult struct {
+		client client.Client
+		err    error
+	}
+	resultCh := make(chan connectResult, 1)
+
+	go func() {
+		ctx := context.Background()
+		c, err := client.NewClient(
+			ctx,
+			client.Config{
+				Address:       databaseURL,
+				APIKey:        apiKey,
+				EnableTLSAuth: true,
+				DialOptions: []grpc.DialOption{
+					grpc.WithBlock(),
+				},
+			},
+		)
+		resultCh <- connectResult{client: c, err: err}
+	}()
+
+	// Wait for connection or timeout
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return nil, formatConnectionError(result.err, databaseURL)
 		}
-		// Try SetToken method (common in Zilliz Cloud SDK)
-		if tokenClient, ok := milvusClient.(interface{ SetToken(string) error }); ok {
-			if err := tokenClient.SetToken(apiKey); err != nil {
-				// If SetToken fails, try SetApiKey
-				if apiKeyClient, ok := milvusClient.(interface{ SetApiKey(string) }); ok {
-					apiKeyClient.SetApiKey(apiKey)
-				}
-			}
-		} else if apiKeyClient, ok := milvusClient.(interface{ SetApiKey(string) }); ok {
-			apiKeyClient.SetApiKey(apiKey)
-		}
+		logger.Info("Successfully connected to Zilliz Cloud")
+		return result.client, nil
+	case <-time.After(ConnectionTimeout):
+		return nil, fmt.Errorf("connection timed out after %v. Please check:\n"+
+			"  1. Database URL is correct: %s\n"+
+			"  2. Your network can reach Zilliz Cloud\n"+
+			"  3. The cluster is running and not paused", ConnectionTimeout, databaseURL)
+	}
+}
+
+// formatConnectionError provides helpful error messages for common connection issues
+func formatConnectionError(err error, databaseURL string) error {
+	errMsg := err.Error()
+
+	if strings.Contains(errMsg, "connection refused") {
+		return fmt.Errorf("connection refused. Please check:\n"+
+			"  1. Database URL is correct: %s\n"+
+			"  2. The cluster is running\n"+
+			"Original error: %w", databaseURL, err)
 	}
 
-	return milvusClient, nil
+	if strings.Contains(errMsg, "no such host") || strings.Contains(errMsg, "DNS") {
+		return fmt.Errorf("DNS lookup failed. Please check:\n"+
+			"  1. Database URL is correct: %s\n"+
+			"  2. The hostname exists and is spelled correctly\n"+
+			"Original error: %w", databaseURL, err)
+	}
+
+	if strings.Contains(errMsg, "authentication") || strings.Contains(errMsg, "unauthorized") || strings.Contains(errMsg, "401") {
+		return fmt.Errorf("authentication failed. Please check:\n"+
+			"  1. API key is correct and not expired\n"+
+			"  2. API key has access to this cluster\n"+
+			"Original error: %w", err)
+	}
+
+	return fmt.Errorf("failed to connect to Zilliz Cloud at %s: %w\n\n"+
+		"Troubleshooting tips:\n"+
+		"  - Verify database_url in config.yaml is correct\n"+
+		"  - Ensure the cluster is running (not paused)\n"+
+		"  - Check your network connectivity\n"+
+		"  - Verify API key is valid", databaseURL, err)
 }
 
 func NewLoadTester(apiKey, databaseURL, collection string, vectorDim int, metricTypeStr string) (*LoadTester, error) {
