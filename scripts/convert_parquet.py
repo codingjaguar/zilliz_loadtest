@@ -29,11 +29,13 @@ def convert_parquet_to_jsonl(parquet_path, output_path, max_rows=None):
 
             record = {
                 '_id': row['_id'],
-                'title': row['title'],
                 'text': row['text'],
                 'emb_b64': emb_b64,
                 'emb_dim': len(row['emb'])
             }
+            # Add title only if present (corpus files have it, query files don't)
+            if 'title' in row and row['title'] is not None:
+                record['title'] = row['title']
             f.write(json.dumps(record) + '\n')
 
             if (idx + 1) % 10000 == 0:

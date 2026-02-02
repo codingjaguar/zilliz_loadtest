@@ -2,11 +2,13 @@ package datasource
 
 import (
 	"bufio"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"zilliz-loadtest/internal/logger"
 )
@@ -56,28 +58,59 @@ func (r *CohereQrelsReader) ReadQrels(split string) (Qrels, error) {
 }
 
 func (r *CohereQrelsReader) getQrelsFilePath(split string) string {
-	filename := fmt.Sprintf("msmarco-qrels-%s.jsonl.gz", split)
+	filename := fmt.Sprintf("msmarco-qrels-%s.jsonl", split)
+	return filepath.Join(r.downloader.GetCacheDir(), filename)
+}
+
+func (r *CohereQrelsReader) getQrelsParquetPath(split string) string {
+	filename := fmt.Sprintf("msmarco-qrels-%s.parquet", split)
 	return filepath.Join(r.downloader.GetCacheDir(), filename)
 }
 
 func (r *CohereQrelsReader) ensureQrelsFile(split string) error {
-	filePath := r.getQrelsFilePath(split)
+	jsonlPath := r.getQrelsFilePath(split)
 
-	// Check if already cached
-	if _, err := os.Stat(filePath); err == nil {
-		logger.Info("Qrels file already cached", "split", split, "path", filePath)
+	// Check if JSONL already cached
+	if _, err := os.Stat(jsonlPath); err == nil {
+		logger.Info("Qrels file already cached", "split", split, "path", jsonlPath)
 		return nil
 	}
 
-	// Download from HuggingFace
-	url := fmt.Sprintf("%s/msmarco/qrels/%s.jsonl.gz", COHERE_BASE_URL, split)
-	logger.Info("Downloading qrels file", "split", split, "url", url)
+	// Check if Parquet exists, if not download it
+	parquetPath := r.getQrelsParquetPath(split)
+	if _, err := os.Stat(parquetPath); os.IsNotExist(err) {
+		// Download from HuggingFace (parquet format)
+		url := fmt.Sprintf("%s/msmarco/qrels/%s.parquet", COHERE_BASE_URL, split)
+		logger.Info("Downloading qrels parquet file", "split", split, "url", url)
 
-	if err := r.downloader.EnsureCacheDir(); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
+		if err := r.downloader.EnsureCacheDir(); err != nil {
+			return fmt.Errorf("failed to create cache directory: %w", err)
+		}
+
+		if err := downloadFile(url, parquetPath); err != nil {
+			return fmt.Errorf("failed to download qrels parquet: %w", err)
+		}
 	}
 
-	return downloadFile(url, filePath)
+	// Convert parquet to JSONL
+	logger.Info("Converting qrels parquet to JSONL", "parquet", parquetPath, "jsonl", jsonlPath)
+	if err := r.convertQrelsParquetToJSONL(parquetPath, jsonlPath); err != nil {
+		return fmt.Errorf("failed to convert qrels parquet: %w", err)
+	}
+
+	return nil
+}
+
+func (r *CohereQrelsReader) convertQrelsParquetToJSONL(parquetPath, jsonlPath string) error {
+	// Use Python script to convert
+	scriptPath := "scripts/convert_qrels_parquet.py"
+	cmd := exec.Command("python3", scriptPath, parquetPath, jsonlPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("conversion failed: %w\nOutput: %s", err, string(output))
+	}
+	logger.Info("Qrels conversion completed", "output", strings.TrimSpace(string(output)))
+	return nil
 }
 
 func (r *CohereQrelsReader) readQrelsFile(filePath string) (Qrels, error) {
@@ -87,33 +120,47 @@ func (r *CohereQrelsReader) readQrelsFile(filePath string) (Qrels, error) {
 	}
 	defer file.Close()
 
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzReader.Close()
-
 	qrels := make(Qrels)
-	scanner := bufio.NewScanner(gzReader)
+	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
 	lineCount := 0
 	for scanner.Scan() {
-		var entry QrelEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			logger.Debug("Failed to parse qrels JSON line", "error", err)
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
 
-		// Initialize map for this query if not exists
-		if qrels[entry.QueryID] == nil {
-			qrels[entry.QueryID] = make(map[string]float64)
+		// Try JSON format first
+		var entry QrelEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err == nil {
+			// JSON format worked
+			if qrels[entry.QueryID] == nil {
+				qrels[entry.QueryID] = make(map[string]float64)
+			}
+			qrels[entry.QueryID][entry.CorpusID] = entry.Score
+			lineCount++
+			continue
 		}
 
-		// Add this relevance judgment
-		qrels[entry.QueryID][entry.CorpusID] = entry.Score
-		lineCount++
+		// Try TSV format: query-id corpus-id score
+		parts := strings.Fields(line)
+		if len(parts) >= 3 {
+			queryID := parts[0]
+			corpusID := parts[1]
+			score, err := strconv.ParseFloat(parts[2], 64)
+			if err != nil {
+				logger.Debug("Failed to parse qrels score", "line", line, "error", err)
+				continue
+			}
+
+			if qrels[queryID] == nil {
+				qrels[queryID] = make(map[string]float64)
+			}
+			qrels[queryID][corpusID] = score
+			lineCount++
+		}
 
 		if lineCount%10000 == 0 {
 			logger.Debug("Reading qrels progress", "lines", lineCount)

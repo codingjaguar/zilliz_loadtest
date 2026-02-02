@@ -83,6 +83,15 @@ func (rc *RecallCalculator) CalculateRecall(
 			bizRecall := calculateBusinessRecall(annResults, relevantDocs)
 			bizRecallSum += bizRecall
 			queriesWithQrels++
+
+			// Debug: Check if any relevant docs are in our results
+			if queriesWithQrels <= 3 {
+				logger.Debug("Business recall debug",
+					"query_id", query.ID,
+					"relevant_docs", relevantDocs,
+					"ann_results", annResults[:min(5, len(annResults))],
+					"biz_recall", bizRecall)
+			}
 		}
 	}
 
