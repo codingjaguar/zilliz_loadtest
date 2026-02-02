@@ -18,19 +18,60 @@ func displayResults(results []loadtest.TestResult) {
 		fmt.Println("No results to display.")
 		return
 	}
-	sep := strings.Repeat("=", loadTestTableWidth)
+
+	// Check if any results have recall metrics
+	hasRecall := false
+	for _, r := range results {
+		if r.RecallTested {
+			hasRecall = true
+			break
+		}
+	}
+
+	var sep string
+	if hasRecall {
+		sep = strings.Repeat("=", 145) // Wider table for recall columns
+	} else {
+		sep = strings.Repeat("=", loadTestTableWidth)
+	}
+
 	fmt.Println("\n" + sep)
 	fmt.Println("Load Test Results")
 	fmt.Println(sep)
+
 	// Header
-	fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
-		"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
-	fmt.Println(strings.Repeat("-", loadTestTableWidth))
-	for _, r := range results {
-		fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
-			r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors)
+	if hasRecall {
+		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %12s | %12s\n",
+			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Math Recall", "Biz Recall")
+		fmt.Println(strings.Repeat("-", 145))
+	} else {
+		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
+			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
+		fmt.Println(strings.Repeat("-", loadTestTableWidth))
 	}
+
+	// Data rows
+	for _, r := range results {
+		if hasRecall && r.RecallTested {
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %11.2f%% | %11.2f%%\n",
+				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall)
+		} else if hasRecall {
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %12s | %12s\n",
+				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, "N/A", "N/A")
+		} else {
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
+				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors)
+		}
+	}
+
 	fmt.Println(sep)
+
+	// Print recall explanation if available
+	if hasRecall {
+		fmt.Println("\nRecall Metrics:")
+		fmt.Println("  Math Recall: % of true nearest neighbors found (ANN vs brute force)")
+		fmt.Println("  Biz Recall:  % of relevant docs returned (vs ground truth qrels)")
+	}
 }
 
 // CompareResults compares two test result sets and shows differences
