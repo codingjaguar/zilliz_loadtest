@@ -125,6 +125,35 @@ seed_batch_size: 15000       # Batch size for insertion
 
 **Note**: The first run will download the dataset (~2GB per file) and convert it to JSONL format. Subsequent runs use the cached version.
 
+### Real Query Embeddings for Load Testing
+
+When you seed with real BEIR embeddings, the load test automatically uses real query embeddings instead of random vectors:
+
+**Two Types of Recall Measured:**
+
+1. **Mathematical Recall** (ANN vs Brute Force)
+   - Compares approximate nearest neighbor (ANN) results to exact brute force search
+   - Measures: What % of true nearest neighbors are found by the index
+   - Use case: Evaluate index quality and search parameter tuning
+   - Example: 95% recall means 95 out of 100 true nearest neighbors were found
+
+2. **Business Recall** (Results vs Ground Truth)
+   - Compares search results to human-judged relevance from MS MARCO dataset
+   - Measures: What % of relevant documents (per qrels) appear in top-k results
+   - Use case: Evaluate real-world search quality and user satisfaction
+   - Example: 85% business recall means 85% of relevant docs were returned
+
+**Why This Matters:**
+- Random vectors don't reflect real data distributions or user queries
+- Real embeddings have natural clustering and semantic structure
+- Mathematical recall shows technical performance
+- Business recall shows user-facing quality
+
+**Query Dataset:**
+- Dev split: ~7K queries (13.8 MB)
+- Train split: ~500K queries (989 MB)
+- Automatically downloaded and cached on first use
+
 ## Configuration
 
 ### Configuration File
@@ -295,8 +324,9 @@ When you choose option 2, the tool will:
 
 ## Enhanced Metrics
 
-The tool now provides comprehensive latency metrics:
+The tool now provides comprehensive latency and accuracy metrics:
 
+### Latency Metrics
 - **P50 Latency**: Median latency (50th percentile)
 - **P90 Latency**: 90th percentile latency
 - **P95 Latency**: 95th percentile latency
@@ -305,6 +335,15 @@ The tool now provides comprehensive latency metrics:
 - **Min/Max Latency**: Minimum and maximum observed latencies
 - **Success Rate**: Percentage of successful queries
 - **Error Breakdown**: Categorized errors (network, API, timeout, SDK)
+
+### Recall Metrics (when using real BEIR queries)
+- **Mathematical Recall**: Measures ANN accuracy vs brute force search
+  - How well the approximate search matches exact nearest neighbors
+  - Indicates index quality and search parameter effectiveness
+- **Business Recall**: Measures relevance vs ground truth qrels
+  - How well search results match human-judged relevance
+  - Reflects real user satisfaction and search quality
+  - Based on MS MARCO relevance judgments
 
 ## Error Categorization
 
