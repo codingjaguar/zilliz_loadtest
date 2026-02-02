@@ -241,6 +241,7 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 }
 
 // loadQueriesAndQrelsIfNeeded detects if collection has BEIR data and loads queries/qrels
+// Business recall (qrels) is only loaded for full corpus (8M+ documents)
 func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, collection string) ([]datasource.CohereQuery, datasource.Qrels) {
 	// Connect to check collection schema
 	c, err := client.NewClient(ctx, client.Config{
@@ -253,24 +254,23 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 	}
 	defer c.Close()
 
-	// Detect if this is a BEIR collection
-	isRealData, err := loadtest.DetectRealDataCollection(ctx, c, collection)
+	// Detect collection info including row count
+	collInfo, err := loadtest.DetectCollectionInfo(ctx, c, collection)
 	if err != nil {
 		logger.Warn("Failed to detect collection type", "error", err)
 		return nil, nil
 	}
 
-	if !isRealData {
+	if !collInfo.HasBEIRSchema {
 		logger.Info("Collection does not have BEIR schema, using random queries")
 		return nil, nil
 	}
 
-	logger.Info("Detected BEIR collection, loading real queries and qrels...")
+	logger.Info("Detected BEIR collection", "row_count", collInfo.RowCount, "is_full_corpus", collInfo.IsFullCorpus)
 
 	// Initialize downloader and readers
 	downloader := datasource.NewCohereDownloader("")
 	queryReader := datasource.NewCohereQueryReader(downloader)
-	qrelsReader := datasource.NewCohereQrelsReader(downloader)
 
 	// Load queries (use dev split for faster loading)
 	queries, err := queryReader.ReadQueries("dev", 10000) // Load up to 10K queries
@@ -279,16 +279,24 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
-	// Load qrels
-	qrels, err := qrelsReader.ReadQrels("dev")
-	if err != nil {
-		logger.Warn("Failed to load qrels", "error", err)
-		// Continue without qrels - we can still do mathematical recall
+	// Only load qrels for full corpus - business recall doesn't make sense otherwise
+	// because the relevant documents won't be in a partial corpus
+	var qrels datasource.Qrels
+	if collInfo.IsFullCorpus {
+		qrelsReader := datasource.NewCohereQrelsReader(downloader)
+		qrels, err = qrelsReader.ReadQrels("dev")
+		if err != nil {
+			logger.Warn("Failed to load qrels", "error", err)
+		} else {
+			logger.Info("Loaded qrels for full corpus", "qrels_queries", len(qrels))
+		}
+	} else {
+		logger.Info("Skipping qrels loading - business recall requires full corpus (8M+ docs)",
+			"current_rows", collInfo.RowCount,
+			"required_rows", loadtest.FullCorpusThreshold)
 	}
 
-	logger.Info("Loaded BEIR queries and qrels",
-		"queries", len(queries),
-		"qrels_queries", len(qrels))
+	logger.Info("Loaded BEIR queries", "queries", len(queries))
 
 	return queries, qrels
 }
