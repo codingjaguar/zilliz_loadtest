@@ -32,6 +32,30 @@ Thumbs.db
 # Configuration files with sensitive data (API keys, database URLs)
 # Ignore actual config files but allow example files
 configs/config.yaml
+*.env
+*.env.*
+!*.env.example
+
+# Cache and datasets (local downloads)
+.cache/
+cache/
+datasets/
+*.parquet
+*.jsonl
+*.json.gz
+*.npy
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.python-version
+
+# Logs
+logs/
+*.log
 
 # Results and output files
 *_results_*.json
@@ -40,3 +64,4 @@ configs/config.yaml
 *.prom
 timeseries_*.csv
 metrics_*.prom
+coverage*.out
