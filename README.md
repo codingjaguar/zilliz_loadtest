@@ -399,6 +399,19 @@ QPS    | P50    | P90    | P95    | P99    | Avg    | Min    | Max    | Errors |
   Error Breakdown: timeout: 10 (66.7%), network: 3 (20.0%), api: 2 (13.3%)
 ```
 
+### With Recall Metrics (Real BEIR Data)
+
+```
+QPS    | P50    | P90    | P95    | P99    | Avg    | Min    | Max    | Errors | Success% | Math Recall | Biz Recall
+--------+--------+--------+--------+--------+--------+--------+--------+--------+----------+-------------+------------
+100    | 45.30  | 62.10  | 68.50  | 92.10  | 48.20  | 13.10  | 245.30 | 0      | 100.00   |      96.50% |     87.30%
+500    | 51.20  | 75.40  | 88.90  | 128.60 | 55.10  | 16.30  | 462.10 | 1      | 99.80    |      95.80% |     86.50%
+
+Recall Metrics:
+  Math Recall: % of true nearest neighbors found (ANN vs brute force)
+  Biz Recall:  % of relevant docs returned (vs ground truth qrels)
+```
+
 ## Notes
 
 ### Database Seeding
