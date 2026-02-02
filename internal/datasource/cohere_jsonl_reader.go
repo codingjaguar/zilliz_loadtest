@@ -36,10 +36,18 @@ func ReadJSONLFile(filePath string, maxRows int) ([]CohereEmbedding, error) {
 	buf := make([]byte, 0, 1024*1024) // 1MB buffer
 	scanner.Buffer(buf, 10*1024*1024)  // 10MB max
 
-	embeddings := make([]CohereEmbedding, 0, maxRows)
+	capacity := maxRows
+	if capacity <= 0 {
+		capacity = 100000 // Default capacity for unlimited reads
+	}
+	embeddings := make([]CohereEmbedding, 0, capacity)
 	rowsRead := 0
 
-	for scanner.Scan() && rowsRead < maxRows {
+	for scanner.Scan() {
+		if maxRows > 0 && rowsRead >= maxRows {
+			break
+		}
+
 		var record CohereJSONLRecord
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			logger.Debug("Failed to parse JSON line", "error", err)
@@ -79,6 +87,75 @@ func ReadJSONLFile(filePath string, maxRows int) ([]CohereEmbedding, error) {
 
 	logger.Info("Completed reading JSONL file", "rows_read", len(embeddings))
 	return embeddings, nil
+}
+
+// StreamJSONLFile streams embeddings from a JSONL file, calling the callback for each batch
+func StreamJSONLFile(filePath string, batchSize int, callback func([]CohereEmbedding) error) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	// Increase buffer size for large lines
+	buf := make([]byte, 0, 1024*1024) // 1MB buffer
+	scanner.Buffer(buf, 10*1024*1024)  // 10MB max
+
+	batch := make([]CohereEmbedding, 0, batchSize)
+	rowsRead := 0
+
+	for scanner.Scan() {
+		var record CohereJSONLRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			logger.Debug("Failed to parse JSON line", "error", err)
+			continue
+		}
+
+		// Decode base64 embedding
+		embBytes, err := base64.StdEncoding.DecodeString(record.EmbB64)
+		if err != nil {
+			logger.Debug("Failed to decode base64 embedding", "error", err)
+			continue
+		}
+
+		// Convert bytes to float32 array
+		embedding := make([]float32, record.EmbDim)
+		for i := 0; i < record.EmbDim; i++ {
+			bits := binary.LittleEndian.Uint32(embBytes[i*4 : (i+1)*4])
+			embedding[i] = math.Float32frombits(bits)
+		}
+
+		batch = append(batch, CohereEmbedding{
+			ID:        record.ID,
+			Title:     record.Title,
+			Text:      record.Text,
+			Embedding: embedding,
+		})
+		rowsRead++
+
+		// Process batch when full
+		if len(batch) >= batchSize {
+			if err := callback(batch); err != nil {
+				return err
+			}
+			batch = make([]CohereEmbedding, 0, batchSize)
+		}
+	}
+
+	// Process remaining batch
+	if len(batch) > 0 {
+		if err := callback(batch); err != nil {
+			return err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading file: %w", err)
+	}
+
+	logger.Debug("Completed streaming JSONL file", "rows_read", rowsRead)
+	return nil
 }
 
 // ConvertParquetToJSONL converts a Parquet file to JSONL using Python helper

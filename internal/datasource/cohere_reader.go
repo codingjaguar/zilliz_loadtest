@@ -473,3 +473,91 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// EmbeddingBatchCallback is called for each batch of embeddings during streaming
+// Return an error to stop streaming
+type EmbeddingBatchCallback func(batch []CohereEmbedding, fileIndex int, totalFiles int) error
+
+// StreamFullCorpus streams all embeddings from the full MS MARCO corpus
+// Processes one file at a time to avoid memory issues with 8.8M vectors
+// Calls the callback for each batch of embeddings read from each file
+func (r *CohereReader) StreamFullCorpus(batchSize int, callback EmbeddingBatchCallback) error {
+	totalFiles := TOTAL_CORPUS_FILES
+
+	logger.Info("Starting full corpus streaming",
+		"total_files", totalFiles,
+		"batch_size", batchSize)
+
+	totalVectorsProcessed := 0
+
+	for fileIndex := 0; fileIndex < totalFiles; fileIndex++ {
+		// Download file if not cached
+		if err := r.downloader.DownloadFile(fileIndex); err != nil {
+			return fmt.Errorf("failed to download file %d: %w", fileIndex, err)
+		}
+
+		filePath := r.downloader.GetParquetFilePath(fileIndex)
+
+		logger.Info("Processing corpus file",
+			"file_index", fileIndex,
+			"total_files", totalFiles,
+			"path", filePath)
+
+		// Stream embeddings from this file in batches
+		err := r.streamFileInBatches(filePath, batchSize, func(batch []CohereEmbedding) error {
+			totalVectorsProcessed += len(batch)
+			return callback(batch, fileIndex, totalFiles)
+		})
+
+		if err != nil {
+			return fmt.Errorf("failed to process file %d: %w", fileIndex, err)
+		}
+
+		logger.Info("Completed processing file",
+			"file_index", fileIndex,
+			"total_vectors_so_far", totalVectorsProcessed)
+	}
+
+	logger.Info("Full corpus streaming completed",
+		"total_files", totalFiles,
+		"total_vectors", totalVectorsProcessed)
+
+	return nil
+}
+
+// streamFileInBatches reads a parquet file and calls the callback for each batch
+func (r *CohereReader) streamFileInBatches(filePath string, batchSize int, callback func([]CohereEmbedding) error) error {
+	// First ensure JSONL exists (convert if needed)
+	jsonlPath, err := EnsureJSONLExists(filePath, 0) // 0 means no limit
+	if err != nil {
+		// Fall back to direct parquet reading
+		logger.Warn("Failed to convert to JSONL, attempting direct Parquet read", "error", err)
+		return r.streamParquetInBatches(filePath, batchSize, callback)
+	}
+
+	// Stream from JSONL file
+	return StreamJSONLFile(jsonlPath, batchSize, callback)
+}
+
+// streamParquetInBatches reads a parquet file directly in batches
+func (r *CohereReader) streamParquetInBatches(filePath string, batchSize int, callback func([]CohereEmbedding) error) error {
+	// Read all embeddings from the file (this file reader doesn't support true streaming)
+	embeddings, err := r.readParquetFileSimple(filePath, 0) // 0 means no limit
+	if err != nil {
+		return err
+	}
+
+	// Process in batches
+	for i := 0; i < len(embeddings); i += batchSize {
+		end := i + batchSize
+		if end > len(embeddings) {
+			end = len(embeddings)
+		}
+
+		if err := callback(embeddings[i:end]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

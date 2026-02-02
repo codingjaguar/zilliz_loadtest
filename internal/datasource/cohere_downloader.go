@@ -18,6 +18,10 @@ const (
 
 	// Default cache directory
 	DEFAULT_CACHE_DIR = "~/.cache/zilliz-loadtest/datasets"
+
+	// Total number of parquet files in the MS MARCO corpus
+	// The full corpus has ~8.84M documents across 500 files
+	TOTAL_CORPUS_FILES = 500
 )
 
 // CohereDownloader handles downloading and caching of Cohere Wikipedia dataset

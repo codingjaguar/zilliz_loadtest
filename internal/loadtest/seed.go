@@ -60,8 +60,10 @@ func SeedDatabaseWithSource(apiKey, databaseURL, collection string, vectorDim, t
 		return SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection, vectorDim, totalVectors, batchSize, metricType, skipCollectionCreation)
 	case "cohere":
 		return SeedDatabaseWithCohere(apiKey, databaseURL, collection, totalVectors, batchSize, metricType, skipCollectionCreation)
+	case "cohere-full":
+		return SeedDatabaseWithCohereFullCorpus(apiKey, databaseURL, collection, batchSize, metricType, skipCollectionCreation)
 	default:
-		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere)", seedSource)
+		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere, cohere-full)", seedSource)
 	}
 }
 
@@ -433,6 +435,170 @@ func createCohereCollection(ctx context.Context, milvusClient client.Client, con
 	if err == nil {
 		logger.Info("Index build completed", "collection", config.CollectionName, "state", state)
 	}
+
+	return nil
+}
+
+// SeedDatabaseWithCohereFullCorpus seeds with the entire 8.8M MS MARCO corpus
+// Uses streaming to avoid loading all vectors into memory at once
+func SeedDatabaseWithCohereFullCorpus(apiKey, databaseURL, collection string, batchSize int, metricType entity.MetricType, skipCollectionCreation bool) error {
+	// Validate inputs
+	if apiKey == "" {
+		return fmt.Errorf("API key is required for seed operation")
+	}
+	if databaseURL == "" {
+		return fmt.Errorf("database URL is required for seed operation")
+	}
+	if collection == "" {
+		return fmt.Errorf("collection name is required for seed operation")
+	}
+	if batchSize <= 0 {
+		batchSize = DefaultBatchSize
+	}
+	if batchSize > 50000 {
+		return fmt.Errorf("batch size too large (%d), maximum recommended is 50000 to avoid gRPC message size limits", batchSize)
+	}
+
+	ctx := context.Background()
+
+	logger.Info("Seeding with full MS MARCO corpus (~8.8M documents)",
+		"total_files", datasource.TOTAL_CORPUS_FILES,
+		"batch_size", batchSize)
+
+	// Create client with retry
+	retryConfig := DefaultRetryConfig()
+	milvusClient, err := RetryClientCreation(ctx, apiKey, databaseURL, retryConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create client after retries: %w", err)
+	}
+	defer milvusClient.Close()
+
+	// Create collection with Cohere schema (1024 dim for Embed V3)
+	vectorDim := 1024 // Cohere Embed V3 dimension
+	collectionConfig := CollectionConfig{
+		CollectionName: collection,
+		VectorDim:      vectorDim,
+		MetricType:     metricType,
+		IndexType:      "AUTOINDEX",
+		ShardNum:       1,
+	}
+
+	if !skipCollectionCreation {
+		logger.Info("Creating collection with Cohere schema", "collection", collection, "vector_dim", vectorDim)
+		if err := createCohereCollection(ctx, milvusClient, collectionConfig); err != nil {
+			return fmt.Errorf("failed to create collection: %w", err)
+		}
+	}
+
+	// Initialize downloader and reader for streaming
+	downloader := datasource.NewCohereDownloader("")
+	reader := datasource.NewCohereReader(downloader)
+
+	startTime := time.Now()
+	vectorsInserted := 0
+	batchNum := 0
+	totalEstimatedVectors := 8840000 // Approximate total vectors in corpus
+
+	logger.Info("Starting full corpus seed operation",
+		"collection", collection,
+		"vector_dim", vectorDim,
+		"batch_size", batchSize,
+		"estimated_total_vectors", totalEstimatedVectors)
+
+	// Stream the entire corpus, inserting batches as they come
+	err = reader.StreamFullCorpus(batchSize, func(batch []datasource.CohereEmbedding, fileIndex, totalFiles int) error {
+		batchNum++
+
+		// Insert the batch
+		if err := insertCohereBatchStreaming(ctx, milvusClient, collection, batch, batchNum, fileIndex, totalFiles, &vectorsInserted, totalEstimatedVectors, startTime); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to stream corpus: %w", err)
+	}
+
+	printSeedSummary(vectorsInserted, time.Since(startTime))
+
+	// Load collection
+	loadCtx, cancel := context.WithTimeout(ctx, 30*time.Minute) // Longer timeout for large corpus
+	defer cancel()
+
+	logger.Info("Flushing and loading collection (this may take several minutes for large corpus)")
+	if err := FlushAndLoadCollection(loadCtx, milvusClient, collection); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// insertCohereBatchStreaming inserts a batch during streaming (with file progress tracking)
+func insertCohereBatchStreaming(ctx context.Context, milvusClient client.Client, collection string, batch []datasource.CohereEmbedding, batchNum, fileIndex, totalFiles int, vectorsInserted *int, totalVectors int, startTime time.Time) error {
+	batchStartTime := time.Now()
+
+	// Prepare column data
+	ids := make([]string, len(batch))
+	titles := make([]string, len(batch))
+	texts := make([]string, len(batch))
+	vectors := make([][]float32, len(batch))
+
+	for i, emb := range batch {
+		ids[i] = emb.ID
+		titles[i] = emb.Title
+		texts[i] = emb.Text
+		vectors[i] = emb.Embedding
+	}
+
+	vectorDim := len(vectors[0])
+
+	// Create columns
+	idColumn := entity.NewColumnVarChar("id", ids)
+	titleColumn := entity.NewColumnVarChar("title", titles)
+	textColumn := entity.NewColumnVarChar("text", texts)
+	vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
+
+	// Retry batch insert
+	retryConfig := DefaultRetryConfig()
+	retryConfig.MaxRetries = 2
+	var insertErr error
+	err := RetryWithBackoff(ctx, func() error {
+		_, err := milvusClient.Insert(ctx, collection, "", idColumn, titleColumn, textColumn, vectorColumn)
+		if err != nil {
+			insertErr = err
+			return err
+		}
+		insertErr = nil
+		return nil
+	}, retryConfig)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert batch %d (file %d/%d, %d vectors) after retries: %w", batchNum, fileIndex+1, totalFiles, len(batch), insertErr)
+	}
+
+	uploadTime := time.Since(batchStartTime)
+	*vectorsInserted += len(batch)
+	rate := float64(len(batch)) / uploadTime.Seconds()
+
+	elapsedTotal := time.Since(startTime)
+	avgRate := float64(*vectorsInserted) / elapsedTotal.Seconds()
+	remainingVectors := totalVectors - *vectorsInserted
+	estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
+
+	progressPercent := float64(*vectorsInserted) / float64(totalVectors) * 100
+	fileProgress := float64(fileIndex+1) / float64(totalFiles) * 100
+
+	logger.Info("Batch completed",
+		"progress_percent", fmt.Sprintf("%.1f", progressPercent),
+		"file_progress", fmt.Sprintf("%d/%d (%.0f%%)", fileIndex+1, totalFiles, fileProgress),
+		"batch_num", batchNum,
+		"vectors_inserted", len(batch),
+		"total_vectors", *vectorsInserted,
+		"upload_time_ms", uploadTime.Milliseconds(),
+		"rate_vec_per_sec", fmt.Sprintf("%.0f", rate),
+		"eta", estimatedTimeRemaining.Round(time.Second))
 
 	return nil
 }
