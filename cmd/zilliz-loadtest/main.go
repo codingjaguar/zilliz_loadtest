@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"zilliz-loadtest/internal/config"
+	"zilliz-loadtest/internal/datasource"
 	"zilliz-loadtest/internal/loadtest"
 	"zilliz-loadtest/internal/logger"
 	"zilliz-loadtest/internal/validation"
+
+	"github.com/milvus-io/milvus-sdk-go/v2/client"
 )
 
 // mergedConn holds connection params after merging flags and config (flags override).
@@ -190,9 +193,17 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 	}
 	validation.PrintValidationResults(result, collection)
 
+	// Detect if collection has real BEIR data and load queries/qrels if so
+	queries, qrels := loadQueriesAndQrelsIfNeeded(ctx, apiKey, databaseURL, collection)
+
 	connMap, _ := ParseConnections(flags.Connections)
 	var results []loadtest.TestResult
-	fmt.Printf("\nRunning load test: %v QPS level(s), %v per level (warmup: %d queries).\n", qpsLevels, duration, warmup)
+	if len(queries) > 0 {
+		fmt.Printf("\nRunning load test with real BEIR queries: %v QPS level(s), %v per level (warmup: %d queries).\n", qpsLevels, duration, warmup)
+	} else {
+		fmt.Printf("\nRunning load test: %v QPS level(s), %v per level (warmup: %d queries).\n", qpsLevels, duration, warmup)
+	}
+
 	for _, targetQPS := range qpsLevels {
 		fmt.Printf("\n--- %d QPS for %v ---\n", targetQPS, duration)
 		numConnections := 10
@@ -209,7 +220,16 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 			fmt.Fprintf(os.Stderr, "Create load tester: %v\n", err)
 			os.Exit(1)
 		}
-		res, err := lt.RunTest(ctx, targetQPS, duration, warmup)
+
+		var res loadtest.TestResult
+		if len(queries) > 0 {
+			// Use real queries and calculate recall
+			res, err = lt.RunTestWithRecall(ctx, targetQPS, duration, warmup, queries, qrels)
+		} else {
+			// Standard test with random vectors
+			res, err = lt.RunTest(ctx, targetQPS, duration, warmup)
+		}
+
 		lt.Close()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "RunTest at %d QPS: %v\n", targetQPS, err)
@@ -218,4 +238,57 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 		results = append(results, res)
 	}
 	displayResults(results)
+}
+
+// loadQueriesAndQrelsIfNeeded detects if collection has BEIR data and loads queries/qrels
+func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, collection string) ([]datasource.CohereQuery, datasource.Qrels) {
+	// Connect to check collection schema
+	c, err := client.NewClient(ctx, client.Config{
+		Address: databaseURL,
+		APIKey:  apiKey,
+	})
+	if err != nil {
+		logger.Warn("Failed to connect for collection detection", "error", err)
+		return nil, nil
+	}
+	defer c.Close()
+
+	// Detect if this is a BEIR collection
+	isRealData, err := loadtest.DetectRealDataCollection(ctx, c, collection)
+	if err != nil {
+		logger.Warn("Failed to detect collection type", "error", err)
+		return nil, nil
+	}
+
+	if !isRealData {
+		logger.Info("Collection does not have BEIR schema, using random queries")
+		return nil, nil
+	}
+
+	logger.Info("Detected BEIR collection, loading real queries and qrels...")
+
+	// Initialize downloader and readers
+	downloader := datasource.NewCohereDownloader("")
+	queryReader := datasource.NewCohereQueryReader(downloader)
+	qrelsReader := datasource.NewCohereQrelsReader(downloader)
+
+	// Load queries (use dev split for faster loading)
+	queries, err := queryReader.ReadQueries("dev", 10000) // Load up to 10K queries
+	if err != nil {
+		logger.Warn("Failed to load queries", "error", err)
+		return nil, nil
+	}
+
+	// Load qrels
+	qrels, err := qrelsReader.ReadQrels("dev")
+	if err != nil {
+		logger.Warn("Failed to load qrels", "error", err)
+		// Continue without qrels - we can still do mathematical recall
+	}
+
+	logger.Info("Loaded BEIR queries and qrels",
+		"queries", len(queries),
+		"qrels_queries", len(qrels))
+
+	return queries, qrels
 }
