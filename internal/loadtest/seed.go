@@ -560,14 +560,22 @@ func insertCohereBatchStreaming(ctx context.Context, milvusClient client.Client,
 	textColumn := entity.NewColumnVarChar("text", texts)
 	vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
 
-	// Retry batch insert
+	// Retry batch insert with more retries for bulk operations
 	retryConfig := DefaultRetryConfig()
-	retryConfig.MaxRetries = 2
+	retryConfig.MaxRetries = 5 // More retries for bulk operations
+	retryConfig.InitialDelay = 500 * time.Millisecond
+	retryConfig.MaxDelay = 10 * time.Second
 	var insertErr error
+	attemptNum := 0
 	err := RetryWithBackoff(ctx, func() error {
+		attemptNum++
+		if attemptNum > 1 {
+			logger.Info("Retrying batch insert", "batch", batchNum, "attempt", attemptNum, "max_retries", retryConfig.MaxRetries+1)
+		}
 		_, err := milvusClient.Insert(ctx, collection, "", idColumn, titleColumn, textColumn, vectorColumn)
 		if err != nil {
 			insertErr = err
+			logger.Warn("Batch insert failed", "batch", batchNum, "attempt", attemptNum, "error", err)
 			return err
 		}
 		insertErr = nil
@@ -575,7 +583,7 @@ func insertCohereBatchStreaming(ctx context.Context, milvusClient client.Client,
 	}, retryConfig)
 
 	if err != nil {
-		return fmt.Errorf("failed to insert batch %d (file %d/%d, %d vectors) after retries: %w", batchNum, fileIndex+1, totalFiles, len(batch), insertErr)
+		return fmt.Errorf("failed to insert batch %d (file %d/%d, %d vectors) after %d retries: %w", batchNum, fileIndex+1, totalFiles, len(batch), retryConfig.MaxRetries+1, insertErr)
 	}
 
 	uploadTime := time.Since(batchStartTime)
@@ -599,6 +607,9 @@ func insertCohereBatchStreaming(ctx context.Context, milvusClient client.Client,
 		"upload_time_ms", uploadTime.Milliseconds(),
 		"rate_vec_per_sec", fmt.Sprintf("%.0f", rate),
 		"eta", estimatedTimeRemaining.Round(time.Second))
+
+	// Small delay between batches to avoid overwhelming serverless clusters
+	time.Sleep(100 * time.Millisecond)
 
 	return nil
 }

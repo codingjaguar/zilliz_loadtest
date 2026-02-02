@@ -98,6 +98,10 @@ func isRetryableError(err error) bool {
 		"unavailable",
 		"busy",
 		"rate limit", // Some rate limits are temporary
+		"tls",        // TLS errors (bad record MAC, etc.)
+		"eof",        // Unexpected EOF
+		"reset",      // Connection reset
+		"broken pipe",
 	}
 
 	for _, pattern := range retryablePatterns {
