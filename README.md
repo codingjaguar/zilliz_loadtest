@@ -4,7 +4,9 @@ A comprehensive CLI tool for seeding and load testing Zilliz Cloud with configur
 
 ## Features
 
-- **Database Seeding**: Seed your database with configurable vector counts, dimensions, and batch sizes
+- **Database Seeding**: Seed your database with synthetic or real embeddings
+  - **Synthetic Vectors**: Random vectors for quick testing
+  - **Real Embeddings**: BEIR dataset with Cohere embeddings (8.84M passages) for realistic performance testing
 - **Pre-flight Validation**: Automatic collection validation before tests (existence, schema, data, indexes)
 - **Enhanced Metrics**: P50, P90, P95, P99 latencies, min/max/avg, error categorization, success rates
 - **Configurable QPS Levels**: Test multiple QPS levels in a single run (default: 100, 500, 1000 QPS)
@@ -74,6 +76,55 @@ go build -o zilliz-loadtest ./cmd/zilliz-loadtest
    ./zilliz-loadtest --config /path/to/config.yaml
    ```
 
+## Real Dataset Seeding
+
+### Why Use Real Embeddings?
+
+Real embeddings from production datasets provide significantly more accurate performance testing compared to random synthetic vectors:
+
+- **Realistic Distribution**: Real embeddings have meaningful structure and clustering in the latent space, reflecting actual data patterns
+- **True Performance**: Random vectors are uniformly distributed and don't capture real-world query behaviors
+- **Better Benchmarking**: Testing with real embeddings gives you performance metrics that closely match production workloads
+- **Clustering Patterns**: Real data exhibits natural clustering which affects index performance and recall
+
+### BEIR Dataset with Cohere Embeddings
+
+The tool supports seeding with the **Cohere/beir-embed-english-v3** dataset from HuggingFace:
+
+- **Dataset**: MS MARCO passage corpus
+- **Total Passages**: 8.84 million passages
+- **Dimensions**: 1024 (Cohere Embed V3)
+- **Fields**: ID, title (empty for MS MARCO), text, vector
+- **Download**: Automatic lazy download with caching to `~/.cache/zilliz-loadtest/datasets/`
+
+**Usage:**
+
+```bash
+# Seed with real BEIR embeddings (50,000 vectors)
+./zilliz-loadtest --seed --seed-source cohere --seed-vector-count 50000
+
+# Seed with 1 million real embeddings
+./zilliz-loadtest --seed --seed-source cohere --seed-vector-count 1000000
+
+# Keep existing collection (don't drop)
+./zilliz-loadtest --seed --seed-source cohere --keep-collection
+
+# Use synthetic vectors (default)
+./zilliz-loadtest --seed --seed-source synthetic
+```
+
+**Configuration file:**
+
+```yaml
+# In configs/config.yaml
+seed_source: "cohere"        # Use real BEIR embeddings
+seed_vector_count: 100000    # Number of vectors to seed
+seed_vector_dim: 1024        # Cohere Embed V3 dimension
+seed_batch_size: 15000       # Batch size for insertion
+```
+
+**Note**: The first run will download the dataset (~2GB per file) and convert it to JSONL format. Subsequent runs use the cached version.
+
 ## Configuration
 
 ### Configuration File
@@ -133,16 +184,21 @@ Environment variables override config file values.
 
 The tool supports both interactive and non-interactive modes. Use flags for automation:
 
-**Seed Operation:**
+**Seed Operation (Synthetic Vectors):**
 ```bash
 ./zilliz-loadtest --seed --api-key KEY --database-url URL --collection COLL \
-  --seed-vector-count 2000000 --seed-vector-dim 768 --seed-batch-size 15000
+  --seed-source synthetic --seed-vector-count 2000000 --seed-vector-dim 768
 ```
 
-**Seed Operation (Skip Collection Creation):**
+**Seed Operation (Real BEIR Embeddings):**
 ```bash
 ./zilliz-loadtest --seed --api-key KEY --database-url URL --collection COLL \
-  --skip-collection-creation --seed-vector-count 2000000 --seed-vector-dim 768
+  --seed-source cohere --seed-vector-count 100000 --seed-vector-dim 1024
+```
+
+**Seed Operation (Keep Existing Collection):**
+```bash
+./zilliz-loadtest --seed --seed-source cohere --keep-collection
 ```
 
 **Load Test:**
@@ -308,21 +364,27 @@ QPS    | P50    | P90    | P95    | P99    | Avg    | Min    | Max    | Errors |
 
 ### Database Seeding
 
-- **Seed Operation**: The seed function automatically creates the collection (if needed) and inserts vectors:
+- **Seed Operation**: The seed function automatically manages collections and inserts vectors:
+  - **Drop Collection by Default**: Collections are dropped before seeding to ensure clean state (use `--keep-collection` to disable)
+  - **Seed Source Options**:
+    - **Synthetic** (default): Random vectors for quick testing - 768 dimensions by default
+    - **Cohere/BEIR**: Real embeddings from MS MARCO corpus - 1024 dimensions, realistic distribution
   - **Automatic Collection Creation**: If the collection doesn't exist, it will be created with:
-    - Primary key field `id` with autoID enabled
+    - Primary key field `id` with autoID enabled (Int64 for synthetic, VarChar for BEIR)
+    - Additional fields for BEIR: `title` (string), `text` (string)
     - Vector field `vector` with the specified dimension
     - Index on the vector field with AUTOINDEX type and the specified metric type (L2, IP, or COSINE)
-  - **Schema Verification**: If the collection exists, it verifies:
+  - **Schema Verification**: If the collection exists and `--keep-collection` is used:
     - Vector field exists and has the correct dimension
     - Index exists on the vector field (creates it if missing)
     - Metric type matches (warns if mismatch)
   - Batch size: 15,000 vectors per batch (~45MB, well under 64MB gRPC limit)
-  - Uses `Insert` API with autoID (no primary key values needed)
   - Provides real-time progress updates with ETA and performance metrics
   - Sequential processing to avoid overwhelming the server and reduce write errors
-- **Default Values**: 
-  - 2,000,000 vectors of 768 dimensions (configurable via config file)
+- **Default Values**:
+  - Seed source: `synthetic` (use `seed_source: "cohere"` for real embeddings)
+  - Vector count: 2,000,000 vectors (configurable via config file)
+  - Dimension: 768 for synthetic, 1024 for BEIR/Cohere (configurable via config file)
   - Metric type: L2 (configurable via config file or prompt)
   - Batch size: 15,000 (configurable via config file)
 
@@ -404,12 +466,18 @@ zilliz-loadtest/
 │   │   ├── result_processor.go
 │   │   ├── seed.go
 │   │   └── retry.go
+│   ├── datasource/      # Real dataset support (BEIR/Cohere)
+│   │   ├── cohere_downloader.go   # HuggingFace dataset downloader
+│   │   ├── cohere_reader.go       # Parquet file reader
+│   │   └── cohere_jsonl_reader.go # JSONL format reader
 │   ├── config/          # Configuration management
 │   ├── export/          # Result export functionality
 │   ├── validation/      # Pre-flight validation and input validation
 │   ├── logger/          # Structured logging
 │   ├── profiling/       # CPU/memory profiling
 │   └── errors/          # Custom error types
+├── scripts/
+│   └── convert_parquet.py  # Parquet to JSONL converter
 ├── configs/
 │   └── config.yaml.example  # Example configuration file
 ├── go.mod               # Go dependencies
