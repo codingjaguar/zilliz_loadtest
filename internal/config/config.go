@@ -26,9 +26,10 @@ type Config struct {
 	OutputFields         []string `yaml:"output_fields"`
 
 	// Seed parameters
-	SeedVectorCount int `yaml:"seed_vector_count"`
-	SeedVectorDim   int `yaml:"seed_vector_dim"`
-	SeedBatchSize   int `yaml:"seed_batch_size"`
+	SeedVectorCount int    `yaml:"seed_vector_count"`
+	SeedVectorDim   int    `yaml:"seed_vector_dim"`
+	SeedBatchSize   int    `yaml:"seed_batch_size"`
+	SeedSource      string `yaml:"seed_source"` // "synthetic" or "cohere"
 
 	// Logging and observability
 	LogLevel        string `yaml:"log_level"`
@@ -57,6 +58,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	config.SeedVectorCount = 2000000
 	config.SeedVectorDim = 768
 	config.SeedBatchSize = 15000
+	config.SeedSource = "synthetic" // Default to synthetic vectors
 
 	// Set logging defaults
 	config.LogLevel = "INFO"

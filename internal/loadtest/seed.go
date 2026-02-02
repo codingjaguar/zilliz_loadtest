@@ -3,8 +3,10 @@ package loadtest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"zilliz-loadtest/internal/datasource"
 	"zilliz-loadtest/internal/logger"
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
@@ -19,6 +21,48 @@ func SeedDatabase(apiKey, databaseURL, collection string, vectorDim, totalVector
 // SeedDatabaseWithBatchSize seeds the database with a custom batch size
 func SeedDatabaseWithBatchSize(apiKey, databaseURL, collection string, vectorDim, totalVectors, batchSize int) error {
 	return SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection, vectorDim, totalVectors, batchSize, entity.L2, false)
+}
+
+// SeedDatabaseWithSource seeds the database with specified data source (synthetic or cohere)
+func SeedDatabaseWithSource(apiKey, databaseURL, collection string, vectorDim, totalVectors, batchSize int, metricType entity.MetricType, seedSource string, skipCollectionCreation, dropCollectionBeforeSeed bool) error {
+	seedSource = strings.ToLower(strings.TrimSpace(seedSource))
+
+	// Drop collection if requested
+	if dropCollectionBeforeSeed && !skipCollectionCreation {
+		ctx := context.Background()
+		c, err := client.NewClient(ctx, client.Config{
+			Address: databaseURL,
+			APIKey:  apiKey,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to connect to Milvus: %w", err)
+		}
+		defer c.Close()
+
+		// Check if collection exists
+		has, err := c.HasCollection(ctx, collection)
+		if err != nil {
+			return fmt.Errorf("failed to check collection existence: %w", err)
+		}
+
+		if has {
+			logger.Info("Dropping existing collection before seeding", "collection", collection)
+			err = c.DropCollection(ctx, collection)
+			if err != nil {
+				return fmt.Errorf("failed to drop collection: %w", err)
+			}
+			logger.Info("Collection dropped successfully", "collection", collection)
+		}
+	}
+
+	switch seedSource {
+	case "synthetic":
+		return SeedDatabaseWithBatchSizeAndMetric(apiKey, databaseURL, collection, vectorDim, totalVectors, batchSize, metricType, skipCollectionCreation)
+	case "cohere":
+		return SeedDatabaseWithCohere(apiKey, databaseURL, collection, totalVectors, batchSize, metricType, skipCollectionCreation)
+	default:
+		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere)", seedSource)
+	}
 }
 
 // SeedDatabaseWithBatchSizeAndMetric seeds the database with a custom batch size and metric type
@@ -207,4 +251,257 @@ func printSeedSummary(vectorsInserted int, totalElapsed time.Duration) {
 		"total_vectors", vectorsInserted,
 		"total_time_seconds", totalElapsed.Seconds(),
 		"avg_rate_vec_per_sec", avgRate)
+}
+
+// SeedDatabaseWithCohere seeds the database using Cohere Wikipedia embeddings
+func SeedDatabaseWithCohere(apiKey, databaseURL, collection string, totalVectors, batchSize int, metricType entity.MetricType, skipCollectionCreation bool) error {
+	// Validate inputs
+	if apiKey == "" {
+		return fmt.Errorf("API key is required for seed operation")
+	}
+	if databaseURL == "" {
+		return fmt.Errorf("database URL is required for seed operation")
+	}
+	if collection == "" {
+		return fmt.Errorf("collection name is required for seed operation")
+	}
+	if totalVectors <= 0 {
+		return fmt.Errorf("total vectors must be positive, got %d", totalVectors)
+	}
+	if batchSize <= 0 {
+		return fmt.Errorf("batch size must be positive, got %d", batchSize)
+	}
+	if batchSize > 50000 {
+		return fmt.Errorf("batch size too large (%d), maximum recommended is 50000 to avoid gRPC message size limits", batchSize)
+	}
+
+	ctx := context.Background()
+
+	logger.Info("Seeding with Cohere Wikipedia embeddings", "total_vectors", totalVectors)
+
+	// Initialize downloader and reader
+	downloader := datasource.NewCohereDownloader("")
+	reader := datasource.NewCohereReader(downloader)
+
+	// Read embeddings from dataset (with lazy download)
+	logger.Info("Reading embeddings from Cohere dataset (will download if needed)")
+	embeddings, err := reader.ReadEmbeddings(totalVectors)
+	if err != nil {
+		return fmt.Errorf("failed to read Cohere embeddings: %w", err)
+	}
+
+	if len(embeddings) == 0 {
+		return fmt.Errorf("no embeddings were read from dataset")
+	}
+
+	vectorDim := len(embeddings[0].Embedding)
+	logger.Info("Loaded embeddings from Cohere dataset",
+		"count", len(embeddings),
+		"dimension", vectorDim)
+
+	// Create client with retry
+	retryConfig := DefaultRetryConfig()
+	milvusClient, err := RetryClientCreation(ctx, apiKey, databaseURL, retryConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create client after retries: %w", err)
+	}
+	defer milvusClient.Close()
+
+	// Ensure collection exists with Cohere schema (includes title and text fields)
+	collectionConfig := CollectionConfig{
+		CollectionName: collection,
+		VectorDim:      vectorDim,
+		MetricType:     metricType,
+		IndexType:      "AUTOINDEX",
+		ShardNum:       1,
+	}
+
+	if skipCollectionCreation {
+		logger.Info("Skipping automatic collection creation - verifying collection exists", "collection", collection)
+	} else {
+		logger.Info("Ensuring collection exists with Cohere schema", "collection", collection)
+	}
+
+	// Create collection with extended schema for Cohere data
+	if !skipCollectionCreation {
+		if err := createCohereCollection(ctx, milvusClient, collectionConfig); err != nil {
+			return fmt.Errorf("failed to create collection: %w", err)
+		}
+	}
+
+	// Insert embeddings in batches
+	totalBatches := (len(embeddings) + batchSize - 1) / batchSize
+	printSeedHeader(collection, vectorDim, len(embeddings), batchSize)
+
+	startTime := time.Now()
+	vectorsInserted := 0
+
+	for batchNum := 0; batchNum < totalBatches; batchNum++ {
+		batchStart := batchNum * batchSize
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(embeddings) {
+			batchEnd = len(embeddings)
+		}
+
+		batch := embeddings[batchStart:batchEnd]
+
+		if err := insertCohereBatch(ctx, milvusClient, collection, batch, batchNum+1, totalBatches, &vectorsInserted, len(embeddings), startTime); err != nil {
+			return err
+		}
+	}
+
+	printSeedSummary(vectorsInserted, time.Since(startTime))
+
+	// Load collection
+	loadCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if err := FlushAndLoadCollection(loadCtx, milvusClient, collection); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// createCohereCollection creates a collection with schema for Cohere data (includes title, text fields)
+func createCohereCollection(ctx context.Context, milvusClient client.Client, config CollectionConfig) error {
+	// Check if collection exists
+	has, err := milvusClient.HasCollection(ctx, config.CollectionName)
+	if err != nil {
+		return fmt.Errorf("failed to check collection: %w", err)
+	}
+
+	if has {
+		logger.Info("Collection already exists", "collection", config.CollectionName)
+		return nil
+	}
+
+	// Create fields for Cohere metadata using builder pattern
+	idField := entity.NewField().
+		WithName("id").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(256).
+		WithIsPrimaryKey(true).
+		WithIsAutoID(false)
+
+	titleField := entity.NewField().
+		WithName("title").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(2048)
+
+	textField := entity.NewField().
+		WithName("text").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(65535)
+
+	vectorField := entity.NewField().
+		WithName("vector").
+		WithDataType(entity.FieldTypeFloatVector).
+		WithDim(int64(config.VectorDim))
+
+	// Create schema
+	schema := &entity.Schema{
+		CollectionName: config.CollectionName,
+		AutoID:         false,
+		Fields:         []*entity.Field{idField, titleField, textField, vectorField},
+	}
+
+	logger.Info("Creating collection", "collection", config.CollectionName, "vector_dim", config.VectorDim, "metric_type", config.MetricType, "shard_num", config.ShardNum)
+
+	if err := milvusClient.CreateCollection(ctx, schema, config.ShardNum); err != nil {
+		return fmt.Errorf("failed to create collection: %w", err)
+	}
+
+	logger.Info("Collection created successfully", "collection", config.CollectionName)
+
+	// Create index
+	logger.Info("Creating index on vector field", "collection", config.CollectionName, "index_type", config.IndexType, "metric_type", config.MetricType)
+
+	idx, err := entity.NewIndexAUTOINDEX(config.MetricType)
+	if err != nil {
+		return fmt.Errorf("failed to create index config: %w", err)
+	}
+
+	if err := milvusClient.CreateIndex(ctx, config.CollectionName, "vector", idx, false); err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	logger.Info("Index created successfully", "collection", config.CollectionName)
+
+	// Wait for index build (simplified - just check once after a delay)
+	time.Sleep(2 * time.Second)
+	state, err := milvusClient.GetIndexState(ctx, config.CollectionName, "vector")
+	if err == nil {
+		logger.Info("Index build completed", "collection", config.CollectionName, "state", state)
+	}
+
+	return nil
+}
+
+// insertCohereBatch inserts a batch of Cohere embeddings
+func insertCohereBatch(ctx context.Context, milvusClient client.Client, collection string, batch []datasource.CohereEmbedding, batchNum, totalBatches int, vectorsInserted *int, totalVectors int, startTime time.Time) error {
+	progressPercent := float64(*vectorsInserted) / float64(totalVectors) * 100
+	logger.Debug("Preparing batch", "progress_percent", progressPercent, "batch_num", batchNum, "total_batches", totalBatches, "batch_size", len(batch))
+
+	batchStartTime := time.Now()
+
+	// Prepare column data
+	ids := make([]string, len(batch))
+	titles := make([]string, len(batch))
+	texts := make([]string, len(batch))
+	vectors := make([][]float32, len(batch))
+
+	for i, emb := range batch {
+		ids[i] = emb.ID
+		titles[i] = emb.Title
+		texts[i] = emb.Text
+		vectors[i] = emb.Embedding
+	}
+
+	vectorDim := len(vectors[0])
+
+	// Create columns
+	idColumn := entity.NewColumnVarChar("id", ids)
+	titleColumn := entity.NewColumnVarChar("title", titles)
+	textColumn := entity.NewColumnVarChar("text", texts)
+	vectorColumn := entity.NewColumnFloatVector("vector", vectorDim, vectors)
+
+	// Retry batch insert
+	retryConfig := DefaultRetryConfig()
+	retryConfig.MaxRetries = 2
+	var insertErr error
+	err := RetryWithBackoff(ctx, func() error {
+		_, err := milvusClient.Insert(ctx, collection, "", idColumn, titleColumn, textColumn, vectorColumn)
+		if err != nil {
+			insertErr = err
+			return err
+		}
+		insertErr = nil
+		return nil
+	}, retryConfig)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert batch %d/%d (%d vectors) after retries: %w", batchNum, totalBatches, len(batch), insertErr)
+	}
+
+	uploadTime := time.Since(batchStartTime)
+	*vectorsInserted += len(batch)
+	rate := float64(len(batch)) / uploadTime.Seconds()
+
+	elapsedTotal := time.Since(startTime)
+	avgRate := float64(*vectorsInserted) / elapsedTotal.Seconds()
+	remainingVectors := totalVectors - *vectorsInserted
+	estimatedTimeRemaining := time.Duration(float64(remainingVectors)/avgRate) * time.Second
+
+	progressPercent = float64(*vectorsInserted) / float64(totalVectors) * 100
+
+	logger.Info("Batch completed",
+		"progress_percent", progressPercent,
+		"batch_num", batchNum,
+		"total_batches", totalBatches,
+		"vectors_inserted", len(batch),
+		"upload_time_ms", uploadTime.Milliseconds(),
+		"rate_vec_per_sec", rate,
+		"eta_seconds", estimatedTimeRemaining.Seconds())
+
+	return nil
 }
