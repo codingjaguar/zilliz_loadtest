@@ -182,3 +182,51 @@ func (d *CohereDownloader) EnsureDatasetFiles(numFiles int) error {
 	logger.Info("All dataset files ready")
 	return nil
 }
+
+// downloadFile is a helper function to download a file from a URL
+func downloadFile(url, destPath string) error {
+	// Download to temporary file first
+	tmpPath := destPath + ".tmp"
+	defer os.Remove(tmpPath) // Clean up on error
+
+	// Create HTTP request with optional HuggingFace token
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add HuggingFace token if available (from environment)
+	if hfToken := os.Getenv("HF_TOKEN"); hfToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status: %s", resp.Status)
+	}
+
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer out.Close()
+
+	// Copy with progress reporting
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// Move temp file to final location
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("failed to move file to cache: %w", err)
+	}
+
+	logger.Info("Download completed", "bytes_downloaded", written, "dest", destPath)
+	return nil
+}

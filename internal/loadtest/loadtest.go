@@ -39,18 +39,21 @@ const (
 )
 
 type TestResult struct {
-	QPS            int
-	P50Latency     float64 // in milliseconds
-	P90Latency     float64 // in milliseconds
-	P95Latency     float64 // in milliseconds
-	P99Latency     float64 // in milliseconds
-	MinLatency     float64 // in milliseconds
-	MaxLatency     float64 // in milliseconds
-	AvgLatency     float64 // in milliseconds
-	TotalQueries   int
-	Errors         int
-	ErrorBreakdown map[ErrorType]int
-	SuccessRate    float64 // percentage
+	QPS                int
+	P50Latency         float64 // in milliseconds
+	P90Latency         float64 // in milliseconds
+	P95Latency         float64 // in milliseconds
+	P99Latency         float64 // in milliseconds
+	MinLatency         float64 // in milliseconds
+	MaxLatency         float64 // in milliseconds
+	AvgLatency         float64 // in milliseconds
+	TotalQueries       int
+	Errors             int
+	ErrorBreakdown     map[ErrorType]int
+	SuccessRate        float64 // percentage
+	MathematicalRecall float64 // recall vs brute force (%)
+	BusinessRecall     float64 // recall vs ground truth qrels (%)
+	RecallTested       bool    // whether recall was calculated
 }
 
 type QueryResult struct {
