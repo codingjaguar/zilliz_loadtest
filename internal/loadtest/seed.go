@@ -62,8 +62,15 @@ func SeedDatabaseWithSource(apiKey, databaseURL, collection string, vectorDim, t
 		return SeedDatabaseWithCohere(apiKey, databaseURL, collection, totalVectors, batchSize, metricType, skipCollectionCreation)
 	case "cohere-full":
 		return SeedDatabaseWithCohereFullCorpus(apiKey, databaseURL, collection, batchSize, metricType, skipCollectionCreation)
+	case "bulk-import":
+		return SeedDatabaseWithBulkImport(apiKey, databaseURL, collection, metricType, skipCollectionCreation)
 	default:
-		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere, cohere-full)", seedSource)
+		// Check if it's a VDBBench dataset name (e.g., "vdbbench:cohere_medium_1m")
+		if strings.HasPrefix(seedSource, "vdbbench:") {
+			datasetName := strings.TrimPrefix(seedSource, "vdbbench:")
+			return SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName, metricType)
+		}
+		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere, cohere-full, bulk-import, vdbbench:<dataset>)", seedSource)
 	}
 }
 
