@@ -11,10 +11,11 @@ import (
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
-// RecallMetrics holds both mathematical and business recall measurements
+// RecallMetrics holds recall and precision measurements
 type RecallMetrics struct {
-	MathematicalRecall float64 // Recall vs brute force search
-	BusinessRecall     float64 // Recall vs ground truth qrels
+	MathematicalRecall float64 // Recall vs brute force search (ANN accuracy)
+	BusinessRecall     float64 // Recall@K: relevant docs found / total relevant
+	BusinessPrecision  float64 // Precision@K: relevant docs found / K
 	QueriesTested      int
 }
 
@@ -78,6 +79,7 @@ func (rc *RecallCalculator) CalculateRecall(
 
 	var mathRecallSum float64
 	var bizRecallSum float64
+	var bizPrecisionSum float64
 	queriesWithQrels := 0
 
 	// Sample a subset of queries for recall calculation (to avoid long runtime)
@@ -103,20 +105,22 @@ func (rc *RecallCalculator) CalculateRecall(
 			mathRecallSum += mathRecall
 		}
 
-		// Calculate business recall (ANN vs ground truth qrels)
+		// Calculate business precision and recall (ANN vs ground truth qrels)
 		if rc.qrels != nil && len(rc.qrels[query.ID]) > 0 {
 			relevantDocs := rc.qrels.GetRelevantDocs(query.ID)
-			bizRecall := calculateBusinessRecall(annResults, relevantDocs)
-			bizRecallSum += bizRecall
+			recall, precision := calculateBusinessMetrics(annResults, relevantDocs)
+			bizRecallSum += recall
+			bizPrecisionSum += precision
 			queriesWithQrels++
 
 			// Debug: Check if any relevant docs are in our results
 			if queriesWithQrels <= 3 {
-				logger.Debug("Business recall debug",
+				logger.Debug("Business metrics debug",
 					"query_id", query.ID,
 					"relevant_docs", relevantDocs,
 					"ann_results", annResults[:min(5, len(annResults))],
-					"biz_recall", bizRecall)
+					"recall", recall,
+					"precision", precision)
 			}
 		}
 	}
@@ -124,16 +128,19 @@ func (rc *RecallCalculator) CalculateRecall(
 	metrics := &RecallMetrics{
 		MathematicalRecall: mathRecallSum / float64(sampleSize),
 		BusinessRecall:     0,
+		BusinessPrecision:  0,
 		QueriesTested:      sampleSize,
 	}
 
 	if queriesWithQrels > 0 {
 		metrics.BusinessRecall = bizRecallSum / float64(queriesWithQrels)
+		metrics.BusinessPrecision = bizPrecisionSum / float64(queriesWithQrels)
 	}
 
 	logger.Info("Recall calculation completed",
 		"math_recall", fmt.Sprintf("%.2f%%", metrics.MathematicalRecall*100),
 		"business_recall", fmt.Sprintf("%.2f%%", metrics.BusinessRecall*100),
+		"business_precision", fmt.Sprintf("%.2f%%", metrics.BusinessPrecision*100),
 		"queries_tested", sampleSize)
 
 	return metrics, nil
@@ -234,29 +241,42 @@ func calculateOverlap(annResults, groundTruth []string) float64 {
 	return float64(matches) / float64(len(groundTruth))
 }
 
-// calculateBusinessRecall computes recall against qrels ground truth
-// For VDBBench datasets, relevantDocs contains top-K neighbors in ranked order
-// We compare search results against only the top-K ground truth neighbors (same K as search)
-func calculateBusinessRecall(annResults, relevantDocs []string) float64 {
+// calculateBusinessMetrics computes recall and precision against qrels ground truth
+// For VDBBench: relevantDocs contains top-K neighbors, compare against same K
+// For BEIR: relevantDocs contains sparse human-labeled relevant docs (typically 1-5)
+// Returns: (recall, precision)
+func calculateBusinessMetrics(annResults, relevantDocs []string) (float64, float64) {
 	if len(relevantDocs) == 0 || len(annResults) == 0 {
-		return 0
+		return 0, 0
 	}
 
-	// Only consider the top-K ground truth neighbors (same K as our search)
-	// VDBBench provides 1000 neighbors but we only want to compare against topK
 	k := len(annResults)
-	groundTruthTopK := relevantDocs
-	if len(relevantDocs) > k {
-		groundTruthTopK = relevantDocs[:k]
+
+	// Determine if this is VDBBench (many neighbors) or BEIR (sparse qrels)
+	// VDBBench provides 1000 neighbors, BEIR typically has 1-10 relevant docs
+	isVDBBench := len(relevantDocs) > 100
+
+	var groundTruth []string
+
+	if isVDBBench {
+		// VDBBench: compare against top-K ground truth neighbors
+		if len(relevantDocs) > k {
+			groundTruth = relevantDocs[:k]
+		} else {
+			groundTruth = relevantDocs
+		}
+	} else {
+		// BEIR: compare against all human-labeled relevant docs
+		groundTruth = relevantDocs
 	}
 
-	// Create set from ground truth top-K
+	// Create set from ground truth
 	truthSet := make(map[string]bool)
-	for _, id := range groundTruthTopK {
+	for _, id := range groundTruth {
 		truthSet[id] = true
 	}
 
-	// Count how many ground truth top-K docs are in our results
+	// Count matches
 	matches := 0
 	for _, id := range annResults {
 		if truthSet[id] {
@@ -264,8 +284,13 @@ func calculateBusinessRecall(annResults, relevantDocs []string) float64 {
 		}
 	}
 
-	// Recall = ground truth docs found / K
-	return float64(matches) / float64(k)
+	// Recall = relevant docs found / total relevant docs
+	recall := float64(matches) / float64(len(groundTruth))
+
+	// Precision = relevant docs found / K (results returned)
+	precision := float64(matches) / float64(k)
+
+	return recall, precision
 }
 
 // sampleIndices returns a random sample of indices

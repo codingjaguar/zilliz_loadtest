@@ -70,11 +70,13 @@ func (lt *LoadTester) RunTestWithRecall(
 			} else {
 				result.MathematicalRecall = recallMetrics.MathematicalRecall * 100 // Convert to percentage
 				result.BusinessRecall = recallMetrics.BusinessRecall * 100         // Convert to percentage
+				result.BusinessPrecision = recallMetrics.BusinessPrecision * 100   // Convert to percentage
 				result.RecallTested = true
 
 				logger.Info("Recall metrics calculated",
 					"math_recall", fmt.Sprintf("%.2f%%", result.MathematicalRecall),
-					"business_recall", fmt.Sprintf("%.2f%%", result.BusinessRecall))
+					"business_recall", fmt.Sprintf("%.2f%%", result.BusinessRecall),
+					"business_precision", fmt.Sprintf("%.2f%%", result.BusinessPrecision))
 			}
 		}
 	}

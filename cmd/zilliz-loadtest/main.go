@@ -180,6 +180,19 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 	vectorDim := resolveInt(flags.VectorDim, cfg.DefaultVectorDim, 768)
 	metricTypeStr := or(flags.MetricType, cfg.DefaultMetricType)
 
+	// Auto-detect metric type for known datasets
+	if strings.HasPrefix(collection, "beir_") {
+		// BEIR datasets always use COSINE and 1024 dimensions
+		if metricTypeStr == "" || metricTypeStr == "L2" {
+			metricTypeStr = "COSINE"
+			logger.Info("Auto-detected COSINE metric for BEIR dataset")
+		}
+		if vectorDim == 768 {
+			vectorDim = 1024
+			logger.Info("Auto-detected 1024 dimensions for BEIR dataset")
+		}
+	}
+
 	ctx := context.Background()
 	expectedMetricType, err := loadtest.ParseMetricType(metricTypeStr)
 	if err != nil {

@@ -55,6 +55,7 @@ type TestResult struct {
 	SuccessRate        float64 // percentage
 	MathematicalRecall float64 // recall vs brute force (%)
 	BusinessRecall     float64 // recall vs ground truth qrels (%)
+	BusinessPrecision  float64 // precision vs ground truth qrels (%)
 	RecallTested       bool    // whether recall was calculated
 }
 
@@ -185,7 +186,7 @@ func CalculateOptimalConnectionsWithParams(expectedLatencyMs, connectionMultipli
 
 func NewLoadTesterWithConnections(apiKey, databaseURL, collection string, vectorDim int,
 	metricTypeStr string, numConnections int) (*LoadTester, error) {
-	return NewLoadTesterWithOptions(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections, 10, "", []string{"id"}, 1)
+	return NewLoadTesterWithOptions(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections, 10, "", nil, 1)
 }
 
 func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim int,
@@ -240,24 +241,30 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 	if topK <= 0 {
 		topK = 10
 	}
-	if outputFields == nil || len(outputFields) == 0 {
-		outputFields = []string{"id"}
-	}
 	if searchLevel < 1 {
 		searchLevel = 1
 	}
 
-	// Auto-detect vector field name from collection schema
+	// Auto-detect vector field and ID field names from collection schema
 	vectorField := "vector" // default
+	idField := "id"         // default
 	schema, err := clients[0].DescribeCollection(ctx, collection)
 	if err == nil {
 		for _, field := range schema.Schema.Fields {
 			if field.DataType == entity.FieldTypeFloatVector || field.DataType == entity.FieldTypeBinaryVector {
 				vectorField = field.Name
 				logger.Info("Auto-detected vector field", "field_name", vectorField, "dimension", field.TypeParams["dim"])
-				break
+			}
+			if field.PrimaryKey {
+				idField = field.Name
+				logger.Info("Auto-detected ID field", "field_name", idField)
 			}
 		}
+	}
+
+	// Use detected ID field if no output fields specified
+	if outputFields == nil || len(outputFields) == 0 {
+		outputFields = []string{idField}
 	}
 
 	return &LoadTester{

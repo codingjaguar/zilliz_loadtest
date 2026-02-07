@@ -76,70 +76,65 @@ go build -o zilliz-loadtest ./cmd/zilliz-loadtest
    ./zilliz-loadtest --config /path/to/config.yaml
    ```
 
-## Real Dataset Seeding
+## Dataset Seeding
 
-### Why Use Real Embeddings?
+### Seed Sources
 
-Real embeddings from production datasets provide significantly more accurate performance testing compared to random synthetic vectors:
+| Source | Ground Truth | Use Case |
+|--------|--------------|----------|
+| `synthetic` | None | Quick testing |
+| `cohere` | KNN-computed | Performance benchmarks |
+| `beir:<name>` | Human-labeled | True search quality |
 
-- **Realistic Distribution**: Real embeddings have meaningful structure and clustering in the latent space, reflecting actual data patterns
-- **True Performance**: Random vectors are uniformly distributed and don't capture real-world query behaviors
-- **Better Benchmarking**: Testing with real embeddings gives you performance metrics that closely match production workloads
-- **Clustering Patterns**: Real data exhibits natural clustering which affects index performance and recall
+### BEIR Datasets (Recommended)
 
-### BEIR Dataset with Cohere Embeddings
+Use BEIR datasets for **true search quality metrics** with human-labeled relevance:
 
-The tool supports seeding with the **Cohere/beir-embed-english-v3** dataset from HuggingFace:
-
-- **Dataset**: MS MARCO passage corpus
-- **Total Passages**: 8.84 million passages
-- **Dimensions**: 1024 (Cohere Embed V3)
-- **Fields**: ID, title (empty for MS MARCO), text, vector
-- **Download**: Automatic lazy download with caching to `~/.cache/zilliz-loadtest/datasets/`
-
-**Usage:**
+| Dataset | Size | Domain |
+|---------|------|--------|
+| `beir:fiqa` | 57K | Finance |
+| `beir:trec-covid` | 171K | Medical |
+| `beir:scifact` | 5K | Science |
+| `beir:nfcorpus` | 4K | Health |
 
 ```bash
-# Seed with real BEIR embeddings (50,000 vectors)
-./zilliz-loadtest --seed --seed-source cohere --seed-vector-count 50000
+# Seed BEIR dataset (auto-detects COSINE metric, 1024 dims)
+./zilliz-loadtest --seed --seed-source beir:fiqa
 
-# Seed with 1 million real embeddings
-./zilliz-loadtest --seed --seed-source cohere --seed-vector-count 1000000
-
-# Keep existing collection (don't drop)
-./zilliz-loadtest --seed --seed-source cohere --keep-collection
-
-# Use synthetic vectors (default)
-./zilliz-loadtest --seed --seed-source synthetic
+# Run load test (auto-detects settings for beir_ collections)
+./zilliz-loadtest --load-test --collection beir_fiqa
 ```
 
-**Configuration file:**
+### Cohere / VDBBench Dataset
 
-```yaml
-# In configs/config.yaml
-seed_source: "cohere"        # Use real BEIR embeddings
-seed_vector_count: 100000    # Number of vectors to seed
-seed_vector_dim: 1024        # Cohere Embed V3 dimension
-seed_batch_size: 15000       # Batch size for insertion
+For large-scale performance testing with 8.8M MS MARCO passages:
+
+```bash
+./zilliz-loadtest --seed --seed-source cohere --seed-vector-count 100000
 ```
 
-**Note**: The first run will download the dataset (~2GB per file) and convert it to JSONL format. Subsequent runs use the cached version.
+## Search Quality Metrics
 
-### Real Query Embeddings for Load Testing
+The tool measures three types of search quality:
 
-When you seed with real BEIR embeddings, the load test automatically uses real query embeddings instead of random vectors:
+| Metric | What it Measures | Ground Truth |
+|--------|-----------------|--------------|
+| **Math Recall** | ANN vs brute-force accuracy | Computed |
+| **Recall@K** | % of relevant docs found | Human-labeled |
+| **Prec@K** | % of results that are relevant | Human-labeled |
 
-**Two Types of Recall Measured:**
+**Example output:**
+```
+QPS | P50(ms) | Success% | Math Recall | Recall@K | Prec@K
+----+---------|----------|-------------|----------|--------
+10  |   52.00 |   100.0% |     100.00% |   54.53% |  13.20%
+```
 
-1. **Mathematical Recall** (ANN vs Brute Force)
-   - Compares approximate nearest neighbor (ANN) results to exact brute force search
-   - Measures: What % of true nearest neighbors are found by the index
-   - Use case: Evaluate index quality and search parameter tuning
-   - Example: 95% recall means 95 out of 100 true nearest neighbors were found
+- **Math Recall 100%**: Index finds all nearest neighbors
+- **Recall@K 55%**: About half of human-relevant docs in top-K
+- **Prec@K 13%**: ~1.3 out of 10 results are relevant
 
-2. **Business Recall** (Results vs Ground Truth)
-   - Compares search results to human-judged relevance from MS MARCO dataset
-   - Measures: What % of relevant documents (per qrels) appear in top-k results
+This shows vector similarity ≠ human relevance - essential for evaluating real search quality.
    - Use case: Evaluate real-world search quality and user satisfaction
    - Example: 85% business recall means 85% of relevant docs were returned
 
