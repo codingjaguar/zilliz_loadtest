@@ -25,6 +25,7 @@ type RecallCalculator struct {
 	collection  string
 	vectorField string
 	idField     string // Primary key field name
+	searchLevel int    // Search level (1-10, higher = more accurate)
 	qrels       datasource.Qrels
 }
 
@@ -57,6 +58,19 @@ func NewRecallCalculatorWithFields(c client.Client, collection, vectorField, idF
 		collection:  collection,
 		vectorField: vectorField,
 		idField:     idField,
+		searchLevel: 1, // default
+		qrels:       qrels,
+	}
+}
+
+// NewRecallCalculatorWithLevel creates a new recall calculator with custom search level
+func NewRecallCalculatorWithLevel(c client.Client, collection, vectorField, idField string, searchLevel int, qrels datasource.Qrels) *RecallCalculator {
+	return &RecallCalculator{
+		client:      c,
+		collection:  collection,
+		vectorField: vectorField,
+		idField:     idField,
+		searchLevel: searchLevel,
 		qrels:       qrels,
 	}
 }
@@ -146,7 +160,7 @@ func (rc *RecallCalculator) CalculateRecall(
 	return metrics, nil
 }
 
-// search performs ANN search
+// search performs ANN search with configured search level
 func (rc *RecallCalculator) search(
 	ctx context.Context,
 	vector []float32,
@@ -154,10 +168,8 @@ func (rc *RecallCalculator) search(
 	metricType entity.MetricType,
 	searchParams entity.SearchParam,
 ) ([]string, error) {
-	sp, err := entity.NewIndexFlatSearchParam()
-	if err != nil {
-		return nil, err
-	}
+	// Use search level parameter for ANN search
+	sp := &SearchParamWithLevel{Level: rc.searchLevel}
 
 	results, err := rc.client.Search(
 		ctx,
@@ -207,15 +219,62 @@ func (rc *RecallCalculator) search(
 	return ids, nil
 }
 
-// bruteForceSearch performs exact search with high search parameters
+// bruteForceSearch performs exact search (always uses flat/exact search, ignoring search level)
 func (rc *RecallCalculator) bruteForceSearch(
 	ctx context.Context,
 	vector []float32,
 	topK int,
 	metricType entity.MetricType,
 ) ([]string, error) {
-	// Use flat search which is exact
-	return rc.search(ctx, vector, topK, metricType, nil)
+	// Use flat search which is exact (search level 10 = highest accuracy)
+	sp := &SearchParamWithLevel{Level: 10}
+
+	results, err := rc.client.Search(
+		ctx,
+		rc.collection,
+		[]string{},
+		"",
+		[]string{rc.idField},
+		[]entity.Vector{entity.FloatVector(vector)},
+		rc.vectorField,
+		metricType,
+		topK,
+		sp,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return []string{}, nil
+	}
+
+	// Extract IDs
+	ids := make([]string, 0, topK)
+	idCol := results[0].Fields.GetColumn(rc.idField)
+	if idCol == nil {
+		return []string{}, nil
+	}
+
+	// Handle both Int64 and VarChar IDs
+	if intCol, ok := idCol.(*entity.ColumnInt64); ok {
+		for i := 0; i < results[0].ResultCount; i++ {
+			val, err := intCol.ValueByIdx(i)
+			if err == nil {
+				ids = append(ids, fmt.Sprintf("%d", val))
+			}
+		}
+	} else if strCol, ok := idCol.(*entity.ColumnVarChar); ok {
+		for i := 0; i < results[0].ResultCount; i++ {
+			val, err := strCol.ValueByIdx(i)
+			if err == nil {
+				ids = append(ids, val)
+			}
+		}
+	}
+
+	return ids, nil
 }
 
 // calculateOverlap computes recall between two result sets

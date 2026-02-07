@@ -40,44 +40,39 @@ func (lt *LoadTester) RunTestWithRecall(
 
 	// Calculate recall metrics
 	if len(queries) > 0 {
-		logger.Info("Calculating recall metrics...")
+		logger.Info("Calculating recall metrics...", "search_level", lt.searchLevel)
 
-		// Get search parameters used during the test
-		sp, err := entity.NewIndexFlatSearchParam()
+		// Detect ID field name based on collection type
+		// BEIR collections use "_id", VDBBench uses "id"
+		idField := "id"
+		if strings.HasPrefix(lt.collection, "beir_") {
+			idField = "_id"
+		}
+
+		// Use one of the clients to calculate recall with configured search level
+		recallCalc := NewRecallCalculatorWithLevel(lt.getClient(), lt.collection, lt.vectorField, idField, lt.searchLevel, qrels)
+
+		recallMetrics, err := recallCalc.CalculateRecall(
+			ctx,
+			queries,
+			lt.topK,
+			lt.metricType,
+			nil, // search params handled internally
+		)
+
 		if err != nil {
-			logger.Warn("Failed to create search params for recall", "error", err)
+			logger.Warn("Failed to calculate recall", "error", err)
 		} else {
-			// Detect ID field name based on collection type
-			// BEIR collections use "_id", VDBBench uses "id"
-			idField := "id"
-			if strings.HasPrefix(lt.collection, "beir_") {
-				idField = "_id"
-			}
+			result.MathematicalRecall = recallMetrics.MathematicalRecall * 100 // Convert to percentage
+			result.BusinessRecall = recallMetrics.BusinessRecall * 100         // Convert to percentage
+			result.BusinessPrecision = recallMetrics.BusinessPrecision * 100   // Convert to percentage
+			result.RecallTested = true
 
-			// Use one of the clients to calculate recall (with correct field names)
-			recallCalc := NewRecallCalculatorWithFields(lt.getClient(), lt.collection, lt.vectorField, idField, qrels)
-
-			recallMetrics, err := recallCalc.CalculateRecall(
-				ctx,
-				queries,
-				lt.topK,
-				lt.metricType,
-				sp,
-			)
-
-			if err != nil {
-				logger.Warn("Failed to calculate recall", "error", err)
-			} else {
-				result.MathematicalRecall = recallMetrics.MathematicalRecall * 100 // Convert to percentage
-				result.BusinessRecall = recallMetrics.BusinessRecall * 100         // Convert to percentage
-				result.BusinessPrecision = recallMetrics.BusinessPrecision * 100   // Convert to percentage
-				result.RecallTested = true
-
-				logger.Info("Recall metrics calculated",
-					"math_recall", fmt.Sprintf("%.2f%%", result.MathematicalRecall),
-					"business_recall", fmt.Sprintf("%.2f%%", result.BusinessRecall),
-					"business_precision", fmt.Sprintf("%.2f%%", result.BusinessPrecision))
-			}
+			logger.Info("Recall metrics calculated",
+				"search_level", lt.searchLevel,
+				"math_recall", fmt.Sprintf("%.2f%%", result.MathematicalRecall),
+				"business_recall", fmt.Sprintf("%.2f%%", result.BusinessRecall),
+				"business_precision", fmt.Sprintf("%.2f%%", result.BusinessPrecision))
 		}
 	}
 

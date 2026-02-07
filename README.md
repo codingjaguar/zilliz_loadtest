@@ -115,26 +115,24 @@ For large-scale performance testing with 8.8M MS MARCO passages:
 
 ## Search Quality Metrics
 
-The tool measures three types of search quality:
-
 | Metric | What it Measures | Ground Truth |
 |--------|-----------------|--------------|
-| **Math Recall** | ANN vs brute-force accuracy | Computed |
-| **Recall@K** | % of relevant docs found | Human-labeled |
-| **Prec@K** | % of results that are relevant | Human-labeled |
+| **KNN Recall** | Index accuracy vs exact search | Computed (brute-force) |
+| **Relevance** | % of human-relevant docs found | Human-labeled qrels |
+| **Precision** | % of results that are relevant | Human-labeled qrels |
 
-**Example output:**
+**Example output with different search levels:**
 ```
-QPS | P50(ms) | Success% | Math Recall | Recall@K | Prec@K
-----+---------|----------|-------------|----------|--------
-10  |   52.00 |   100.0% |     100.00% |   54.53% |  13.20%
+Search Level 1:  KNN Recall 85%,  Relevance 76%
+Search Level 5:  KNN Recall 99%,  Relevance 78%
+Search Level 10: KNN Recall 100%, Relevance 78%
 ```
 
-- **Math Recall 100%**: Index finds all nearest neighbors
-- **Recall@K 55%**: About half of human-relevant docs in top-K
-- **Prec@K 13%**: ~1.3 out of 10 results are relevant
+- **KNN Recall**: Measures index accuracy (lower search level = faster but less accurate)
+- **Relevance**: Measures alignment with human judgment (vector similarity ≠ semantic relevance)
+- **Precision**: Out of K results returned, how many are actually relevant
 
-This shows vector similarity ≠ human relevance - essential for evaluating real search quality.
+The gap between KNN Recall and Relevance shows that finding exact nearest neighbors doesn't guarantee finding human-relevant documents.
    - Use case: Evaluate real-world search quality and user satisfaction
    - Example: 85% business recall means 85% of relevant docs were returned
 

@@ -42,7 +42,7 @@ func displayResults(results []loadtest.TestResult) {
 	// Header
 	if hasRecall {
 		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %12s | %10s | %10s\n",
-			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Math Recall", "Recall@K", "Prec@K")
+			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "KNN Recall", "Relevance", "Precision")
 		fmt.Println(strings.Repeat("-", 165))
 	} else {
 		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
@@ -68,10 +68,10 @@ func displayResults(results []loadtest.TestResult) {
 
 	// Print recall explanation if available
 	if hasRecall {
-		fmt.Println("\nSearch Quality Metrics (vs human-labeled ground truth):")
-		fmt.Println("  Math Recall: ANN accuracy - % of brute-force neighbors found")
-		fmt.Println("  Recall@K:    % of relevant docs found in top-K results")
-		fmt.Println("  Prec@K:      % of top-K results that are relevant")
+		fmt.Println("\nSearch Quality Metrics:")
+		fmt.Println("  KNN Recall:  Index accuracy - % of exact KNN neighbors found")
+		fmt.Println("  Relevance:   % of human-relevant docs found (vs qrels)")
+		fmt.Println("  Precision:   % of results that are human-relevant")
 	}
 }
 

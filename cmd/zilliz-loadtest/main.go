@@ -228,7 +228,14 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 		if connMap == nil {
 			numConnections, _ = loadtest.CalculateOptimalConnectionsWithParams(cfg.ExpectedLatencyMs, cfg.ConnectionMultiplier, targetQPS)
 		}
-		lt, err := loadtest.NewLoadTesterWithConnections(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections)
+
+		// Use search level from config (default 1)
+		searchLevel := cfg.SearchLevel
+		if searchLevel < 1 {
+			searchLevel = 1
+		}
+
+		lt, err := loadtest.NewLoadTesterWithOptions(apiKey, databaseURL, collection, vectorDim, metricTypeStr, numConnections, cfg.TopK, cfg.FilterExpression, nil, searchLevel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Create load tester: %v\n", err)
 			os.Exit(1)
