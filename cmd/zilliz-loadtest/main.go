@@ -240,8 +240,8 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 	displayResults(results)
 }
 
-// loadQueriesAndQrelsIfNeeded detects if collection has BEIR data and loads queries/qrels
-// Business recall (qrels) is only loaded for full corpus (8M+ documents)
+// loadQueriesAndQrelsIfNeeded detects if collection has BEIR or VDBBench data and loads queries/qrels
+// Business recall (qrels) is only loaded for full corpus (8M+ documents for BEIR, or VDBBench datasets)
 func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, collection string) ([]datasource.CohereQuery, datasource.Qrels) {
 	// Connect to check collection schema
 	c, err := client.NewClient(ctx, client.Config{
@@ -261,6 +261,23 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
+	// Check for VDBBench schema first
+	if collInfo.HasVDBBenchSchema {
+		datasetName := loadtest.DetectVDBBenchDataset(collInfo)
+		if datasetName != "" {
+			logger.Info("Detected VDBBench collection",
+				"dataset", datasetName,
+				"row_count", collInfo.RowCount,
+				"vector_dim", collInfo.VectorDim)
+			return loadVDBBenchQueriesAndQrels(datasetName)
+		}
+		logger.Info("VDBBench-like schema but unknown dataset, using random queries",
+			"vector_dim", collInfo.VectorDim,
+			"row_count", collInfo.RowCount)
+		return nil, nil
+	}
+
+	// Check for BEIR schema
 	if !collInfo.HasBEIRSchema {
 		logger.Info("Collection does not have BEIR schema, using random queries")
 		return nil, nil
@@ -297,6 +314,39 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 	}
 
 	logger.Info("Loaded BEIR queries", "queries", len(queries))
+
+	return queries, qrels
+}
+
+// loadVDBBenchQueriesAndQrels loads test queries and ground truth for a VDBBench dataset
+func loadVDBBenchQueriesAndQrels(datasetName string) ([]datasource.CohereQuery, datasource.Qrels) {
+	// Load VDBBench queries
+	vdbQueries, err := datasource.LoadVDBBenchQueries(datasetName)
+	if err != nil {
+		logger.Warn("Failed to load VDBBench queries", "dataset", datasetName, "error", err)
+		return nil, nil
+	}
+
+	// Convert to CohereQuery format for compatibility
+	queries := make([]datasource.CohereQuery, len(vdbQueries))
+	for i, q := range vdbQueries {
+		queries[i] = datasource.CohereQuery{
+			ID:        fmt.Sprintf("%d", q.ID),
+			Embedding: q.Embedding,
+		}
+	}
+	logger.Info("Loaded VDBBench queries", "count", len(queries))
+
+	// Load ground truth neighbors
+	neighbors, err := datasource.LoadVDBBenchNeighbors(datasetName)
+	if err != nil {
+		logger.Warn("Failed to load VDBBench ground truth", "dataset", datasetName, "error", err)
+		return queries, nil
+	}
+
+	// Convert to Qrels format
+	qrels := datasource.NewVDBBenchQrels(neighbors).ToQrels()
+	logger.Info("Loaded VDBBench ground truth for recall calculation", "queries_with_neighbors", len(qrels))
 
 	return queries, qrels
 }

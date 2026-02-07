@@ -21,6 +21,7 @@ type LoadTester struct {
 	clientIdx    int64           // Atomic counter for round-robin client selection
 	collection   string
 	vectorDim    int
+	vectorField  string // Name of the vector field (auto-detected if empty)
 	metricType   entity.MetricType
 	topK         int
 	filterExpr   string
@@ -246,11 +247,25 @@ func NewLoadTesterWithOptions(apiKey, databaseURL, collection string, vectorDim 
 		searchLevel = 1
 	}
 
+	// Auto-detect vector field name from collection schema
+	vectorField := "vector" // default
+	schema, err := clients[0].DescribeCollection(ctx, collection)
+	if err == nil {
+		for _, field := range schema.Schema.Fields {
+			if field.DataType == entity.FieldTypeFloatVector || field.DataType == entity.FieldTypeBinaryVector {
+				vectorField = field.Name
+				logger.Info("Auto-detected vector field", "field_name", vectorField, "dimension", field.TypeParams["dim"])
+				break
+			}
+		}
+	}
+
 	return &LoadTester{
 		clients:      clients,
 		clientIdx:    0,
 		collection:   collection,
 		vectorDim:    vectorDim,
+		vectorField:  vectorField,
 		metricType:   metricType,
 		topK:         topK,
 		filterExpr:   filterExpr,
@@ -455,10 +470,10 @@ func (lt *LoadTester) executeQuery(ctx context.Context, queryNum int) QueryResul
 		lt.filterExpr,   // expr (filter expression if configured)
 		lt.outputFields, // output fields
 		[]entity.Vector{entity.FloatVector(queryVector)},
-		"vector",      // vector field name
-		lt.metricType, // metric type
-		lt.topK,       // topK
-		searchParams,  // search params with level
+		lt.vectorField, // vector field name (auto-detected)
+		lt.metricType,  // metric type
+		lt.topK,        // topK
+		searchParams,   // search params with level
 	) // opts parameter is optional and not used
 
 	latency := time.Since(searchStart)

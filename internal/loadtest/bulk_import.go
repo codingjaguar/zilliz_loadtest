@@ -304,11 +304,13 @@ func submitBulkImportJob(apiKey, clusterID, collection, objectURL string) (strin
 	return importResp.Data.JobID, nil
 }
 
-// VDBBenchBaseURL is the HTTPS URL for VDBBench datasets (CDN-fronted S3)
-const VDBBenchBaseURL = "https://assets.zilliz.com/benchmark"
+// VDBBenchS3BaseURL is the S3 URI for VDBBench datasets (public bucket)
+const VDBBenchS3BaseURL = "s3://assets.zilliz.com/benchmark"
 
-// SeedDatabaseWithVDBBench seeds the database using VDBBench dataset
-// Downloads parquet and streams data via SDK since bulk import API doesn't support CDN URLs
+// VDBBenchHTTPSBaseURL is the HTTPS URL for VDBBench datasets (for local downloads)
+const VDBBenchHTTPSBaseURL = "https://assets.zilliz.com/benchmark"
+
+// SeedDatabaseWithVDBBench seeds the database using VDBBench dataset via Zilliz Cloud bulk import API
 func SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName string, metricType entity.MetricType) error {
 	ctx := context.Background()
 
@@ -328,10 +330,15 @@ func SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName strin
 
 	dataset, ok := datasets[datasetName]
 	if !ok {
-		return fmt.Errorf("unknown VDBBench dataset: %s (available: cohere_small_100k, cohere_medium_1m, openai_small_50k, openai_medium_500k, sift_small_500k, sift_medium_5m, gist_small_100k, gist_medium_1m, glove_small_100k, glove_medium_1m)", datasetName)
+		return fmt.Errorf("unknown dataset: %s (available: cohere_small_100k, cohere_medium_1m, openai_small_50k, openai_medium_500k, sift_small_500k, sift_medium_5m, gist_small_100k, gist_medium_1m, glove_small_100k, glove_medium_1m)", datasetName)
 	}
 
-	logger.Info("Starting VDBBench dataset import",
+	// Use dataset name as collection name for public datasets
+	if collection == "" || collection == "loadtest_collection" {
+		collection = datasetName
+	}
+
+	logger.Info("Starting bulk import from public dataset",
 		"collection", collection,
 		"dataset", datasetName,
 		"vector_dim", dataset.VectorDim,
@@ -349,29 +356,31 @@ func SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName strin
 		return fmt.Errorf("failed to create collection: %w", err)
 	}
 
-	// Download parquet file
-	parquetURL := fmt.Sprintf("%s/%s/train.parquet", VDBBenchBaseURL, datasetName)
-	cacheDir := datasource.GetCacheDir()
-	localPath := fmt.Sprintf("%s/vdbbench-%s-train.parquet", cacheDir, datasetName)
-
-	logger.Info("Downloading VDBBench dataset", "url", parquetURL)
-
-	if err := datasource.DownloadFile(parquetURL, localPath); err != nil {
-		return fmt.Errorf("failed to download dataset: %w", err)
+	// Extract cluster ID from database URL
+	clusterID, err := ExtractClusterID(databaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to extract cluster ID from database URL: %w", err)
 	}
 
-	logger.Info("Dataset downloaded, starting stream insert", "path", localPath)
+	// Submit bulk import job using S3 URI
+	s3URL := fmt.Sprintf("%s/%s/train.parquet", VDBBenchS3BaseURL, datasetName)
+	logger.Info("Submitting bulk import job", "s3_url", s3URL)
 
+	jobID, err := submitBulkImportJob(apiKey, clusterID, collection, s3URL)
+	if err != nil {
+		return fmt.Errorf("failed to submit bulk import job: %w", err)
+	}
+
+	logger.Info("Bulk import job submitted", "job_id", jobID)
+
+	// Wait for import job to complete
 	startTime := time.Now()
-	batchSize := 10000
-
-	// Stream data from parquet directly (no JSONL conversion)
-	if err := streamVDBBenchParquet(ctx, milvusClient, apiKey, databaseURL, collection, localPath, dataset.VectorDim, batchSize); err != nil {
-		return fmt.Errorf("failed to stream data: %w", err)
+	if err := waitForImportJob(apiKey, clusterID, jobID); err != nil {
+		return fmt.Errorf("import job failed: %w", err)
 	}
 
 	elapsed := time.Since(startTime)
-	logger.Info("Data insertion completed",
+	logger.Info("Bulk import completed",
 		"duration", elapsed.Round(time.Second),
 		"expected_rows", dataset.NumRows)
 

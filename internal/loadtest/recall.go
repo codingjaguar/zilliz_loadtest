@@ -20,17 +20,29 @@ type RecallMetrics struct {
 
 // RecallCalculator computes recall metrics
 type RecallCalculator struct {
-	client     client.Client
-	collection string
-	qrels      datasource.Qrels
+	client      client.Client
+	collection  string
+	vectorField string
+	qrels       datasource.Qrels
 }
 
 // NewRecallCalculator creates a new recall calculator
 func NewRecallCalculator(c client.Client, collection string, qrels datasource.Qrels) *RecallCalculator {
 	return &RecallCalculator{
-		client:     c,
-		collection: collection,
-		qrels:      qrels,
+		client:      c,
+		collection:  collection,
+		vectorField: "vector", // default field name
+		qrels:       qrels,
+	}
+}
+
+// NewRecallCalculatorWithField creates a new recall calculator with custom vector field name
+func NewRecallCalculatorWithField(c client.Client, collection, vectorField string, qrels datasource.Qrels) *RecallCalculator {
+	return &RecallCalculator{
+		client:      c,
+		collection:  collection,
+		vectorField: vectorField,
+		qrels:       qrels,
 	}
 }
 
@@ -133,7 +145,7 @@ func (rc *RecallCalculator) search(
 		"",
 		[]string{"id"},
 		[]entity.Vector{entity.FloatVector(vector)},
-		"vector",
+		rc.vectorField,
 		metricType,
 		topK,
 		sp,

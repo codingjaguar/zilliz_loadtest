@@ -46,8 +46,8 @@ func (lt *LoadTester) RunTestWithRecall(
 		if err != nil {
 			logger.Warn("Failed to create search params for recall", "error", err)
 		} else {
-			// Use one of the clients to calculate recall
-			recallCalc := NewRecallCalculator(lt.getClient(), lt.collection, qrels)
+			// Use one of the clients to calculate recall (with correct vector field name)
+			recallCalc := NewRecallCalculatorWithField(lt.getClient(), lt.collection, lt.vectorField, qrels)
 
 			recallMetrics, err := recallCalc.CalculateRecall(
 				ctx,
@@ -130,7 +130,7 @@ func (lt *LoadTester) executeRealQuery(ctx context.Context, query datasource.Coh
 		lt.filterExpr,
 		lt.outputFields,
 		[]entity.Vector{entity.FloatVector(query.Embedding)},
-		"vector",
+		lt.vectorField,
 		lt.metricType,
 		lt.topK,
 		sp,
