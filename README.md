@@ -115,24 +115,35 @@ For large-scale performance testing with 8.8M MS MARCO passages:
 
 ## Search Quality Metrics
 
-| Metric | What it Measures | Ground Truth |
-|--------|-----------------|--------------|
-| **KNN Recall** | Index accuracy vs exact search | Computed (brute-force) |
-| **Relevance** | % of human-relevant docs found | Human-labeled qrels |
-| **Precision** | % of results that are relevant | Human-labeled qrels |
+The tool reports industry-standard metrics:
 
-**Example output with different search levels:**
+| Metric | Definition | Ground Truth |
+|--------|-----------|--------------|
+| **Recall** | % of true nearest neighbors found by ANN index | Exact KNN search |
+| **Recall@K** | % of relevant docs retrieved in top-K | Human qrels |
+| **Precision@K** | % of top-K results that are relevant | Human qrels |
+
+**Example output:**
 ```
-Search Level 1:  KNN Recall 85%,  Relevance 76%
-Search Level 5:  KNN Recall 99%,  Relevance 78%
-Search Level 10: KNN Recall 100%, Relevance 78%
+QPS | P50(ms) | Success% | Recall  | Recall@K | Prec@K
+----+---------+----------+---------+----------+--------
+10  |   54.00 |   100.0% |  96.90% |   54.53% |  13.20%
 ```
 
-- **KNN Recall**: Measures index accuracy (lower search level = faster but less accurate)
-- **Relevance**: Measures alignment with human judgment (vector similarity ≠ semantic relevance)
-- **Precision**: Out of K results returned, how many are actually relevant
+**What the metrics tell you:**
+- **Recall 97%**: The ANN index finds 97% of exact nearest neighbors (index quality)
+- **Recall@K 55%**: Only 55% of human-relevant docs appear in results (retrieval quality)
+- **Prec@K 13%**: ~1.3 of 10 results are human-relevant (result quality)
 
-The gap between KNN Recall and Relevance shows that finding exact nearest neighbors doesn't guarantee finding human-relevant documents.
+The gap between Recall and Recall@K shows that **vector similarity ≠ semantic relevance** - finding nearest neighbors doesn't guarantee finding relevant documents.
+
+**Search level impact:**
+```
+Level 1:  Recall 85%,  Recall@K 54%   (fast, approximate)
+Level 10: Recall 100%, Recall@K 54%  (slow, exact)
+```
+
+Higher search levels improve index accuracy but don't improve human relevance - that's determined by the embedding model and data quality.
    - Use case: Evaluate real-world search quality and user satisfaction
    - Example: 85% business recall means 85% of relevant docs were returned
 

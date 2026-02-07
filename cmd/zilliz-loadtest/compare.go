@@ -41,9 +41,9 @@ func displayResults(results []loadtest.TestResult) {
 
 	// Header
 	if hasRecall {
-		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %12s | %10s | %10s\n",
-			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "KNN Recall", "Relevance", "Precision")
-		fmt.Println(strings.Repeat("-", 165))
+		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %10s | %10s | %10s\n",
+			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Recall", "Recall@K", "Prec@K")
+		fmt.Println(strings.Repeat("-", 160))
 	} else {
 		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
 			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
@@ -53,10 +53,10 @@ func displayResults(results []loadtest.TestResult) {
 	// Data rows
 	for _, r := range results {
 		if hasRecall && r.RecallTested {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %11.2f%% | %9.2f%% | %9.2f%%\n",
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %9.2f%% | %9.2f%% | %9.2f%%\n",
 				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall, r.BusinessPrecision)
 		} else if hasRecall {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %12s | %10s | %10s\n",
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %10s | %10s | %10s\n",
 				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, "N/A", "N/A", "N/A")
 		} else {
 			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
@@ -68,10 +68,10 @@ func displayResults(results []loadtest.TestResult) {
 
 	// Print recall explanation if available
 	if hasRecall {
-		fmt.Println("\nSearch Quality Metrics:")
-		fmt.Println("  KNN Recall:  Index accuracy - % of exact KNN neighbors found")
-		fmt.Println("  Relevance:   % of human-relevant docs found (vs qrels)")
-		fmt.Println("  Precision:   % of results that are human-relevant")
+		fmt.Println("\nMetrics:")
+		fmt.Println("  Recall:    ANN accuracy vs exact search (index quality)")
+		fmt.Println("  Recall@K:  Relevant docs found / total relevant (retrieval quality)")
+		fmt.Println("  Prec@K:    Relevant docs / K results (result relevance)")
 	}
 }
 
