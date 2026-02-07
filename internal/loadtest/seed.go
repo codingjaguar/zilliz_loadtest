@@ -70,7 +70,13 @@ func SeedDatabaseWithSource(apiKey, databaseURL, collection string, vectorDim, t
 			datasetName := strings.TrimPrefix(seedSource, "vdbbench:")
 			return SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName, metricType)
 		}
-		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere, cohere-full, bulk-import, vdbbench:<dataset>)", seedSource)
+		// Check if it's a BEIR dataset name (e.g., "beir:fiqa")
+		// BEIR datasets have human-labeled qrels for true business recall
+		if strings.HasPrefix(seedSource, "beir:") {
+			datasetName := strings.TrimPrefix(seedSource, "beir:")
+			return SeedDatabaseWithBEIR(apiKey, databaseURL, collection, datasetName, batchSize)
+		}
+		return fmt.Errorf("unknown seed source: %s (valid options: synthetic, cohere, cohere-full, bulk-import, vdbbench:<dataset>, beir:<dataset>)", seedSource)
 	}
 }
 

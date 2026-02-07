@@ -23,6 +23,7 @@ type RecallCalculator struct {
 	client      client.Client
 	collection  string
 	vectorField string
+	idField     string // Primary key field name
 	qrels       datasource.Qrels
 }
 
@@ -32,6 +33,7 @@ func NewRecallCalculator(c client.Client, collection string, qrels datasource.Qr
 		client:      c,
 		collection:  collection,
 		vectorField: "vector", // default field name
+		idField:     "id",     // default ID field name
 		qrels:       qrels,
 	}
 }
@@ -42,6 +44,18 @@ func NewRecallCalculatorWithField(c client.Client, collection, vectorField strin
 		client:      c,
 		collection:  collection,
 		vectorField: vectorField,
+		idField:     "id", // default ID field name
+		qrels:       qrels,
+	}
+}
+
+// NewRecallCalculatorWithFields creates a new recall calculator with custom field names
+func NewRecallCalculatorWithFields(c client.Client, collection, vectorField, idField string, qrels datasource.Qrels) *RecallCalculator {
+	return &RecallCalculator{
+		client:      c,
+		collection:  collection,
+		vectorField: vectorField,
+		idField:     idField,
 		qrels:       qrels,
 	}
 }
@@ -143,7 +157,7 @@ func (rc *RecallCalculator) search(
 		rc.collection,
 		[]string{},
 		"",
-		[]string{"id"},
+		[]string{rc.idField},
 		[]entity.Vector{entity.FloatVector(vector)},
 		rc.vectorField,
 		metricType,
@@ -161,22 +175,22 @@ func (rc *RecallCalculator) search(
 
 	// Extract IDs
 	ids := make([]string, 0, topK)
-	idField := results[0].Fields.GetColumn("id")
-	if idField == nil {
+	idCol := results[0].Fields.GetColumn(rc.idField)
+	if idCol == nil {
 		return []string{}, nil
 	}
 
 	// Handle both Int64 and VarChar IDs
-	if idCol, ok := idField.(*entity.ColumnInt64); ok {
+	if intCol, ok := idCol.(*entity.ColumnInt64); ok {
 		for i := 0; i < results[0].ResultCount; i++ {
-			val, err := idCol.ValueByIdx(i)
+			val, err := intCol.ValueByIdx(i)
 			if err == nil {
 				ids = append(ids, fmt.Sprintf("%d", val))
 			}
 		}
-	} else if idCol, ok := idField.(*entity.ColumnVarChar); ok {
+	} else if strCol, ok := idCol.(*entity.ColumnVarChar); ok {
 		for i := 0; i < results[0].ResultCount; i++ {
-			val, err := idCol.ValueByIdx(i)
+			val, err := strCol.ValueByIdx(i)
 			if err == nil {
 				ids = append(ids, val)
 			}
@@ -221,32 +235,37 @@ func calculateOverlap(annResults, groundTruth []string) float64 {
 }
 
 // calculateBusinessRecall computes recall against qrels ground truth
+// For VDBBench datasets, relevantDocs contains top-K neighbors in ranked order
+// We compare search results against only the top-K ground truth neighbors (same K as search)
 func calculateBusinessRecall(annResults, relevantDocs []string) float64 {
-	if len(relevantDocs) == 0 {
+	if len(relevantDocs) == 0 || len(annResults) == 0 {
 		return 0
 	}
 
-	// Create set from relevant docs
-	relevantSet := make(map[string]bool)
-	for _, id := range relevantDocs {
-		relevantSet[id] = true
+	// Only consider the top-K ground truth neighbors (same K as our search)
+	// VDBBench provides 1000 neighbors but we only want to compare against topK
+	k := len(annResults)
+	groundTruthTopK := relevantDocs
+	if len(relevantDocs) > k {
+		groundTruthTopK = relevantDocs[:k]
 	}
 
-	// Count how many relevant docs are in top-k results
+	// Create set from ground truth top-K
+	truthSet := make(map[string]bool)
+	for _, id := range groundTruthTopK {
+		truthSet[id] = true
+	}
+
+	// Count how many ground truth top-K docs are in our results
 	matches := 0
 	for _, id := range annResults {
-		if relevantSet[id] {
+		if truthSet[id] {
 			matches++
 		}
 	}
 
-	// Recall = relevant docs found / min(k, total relevant docs)
-	denominator := min(len(annResults), len(relevantDocs))
-	if denominator == 0 {
-		return 0
-	}
-
-	return float64(matches) / float64(denominator)
+	// Recall = ground truth docs found / K
+	return float64(matches) / float64(k)
 }
 
 // sampleIndices returns a random sample of indices

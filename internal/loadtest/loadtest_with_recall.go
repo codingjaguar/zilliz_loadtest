@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"zilliz-loadtest/internal/datasource"
@@ -46,8 +47,15 @@ func (lt *LoadTester) RunTestWithRecall(
 		if err != nil {
 			logger.Warn("Failed to create search params for recall", "error", err)
 		} else {
-			// Use one of the clients to calculate recall (with correct vector field name)
-			recallCalc := NewRecallCalculatorWithField(lt.getClient(), lt.collection, lt.vectorField, qrels)
+			// Detect ID field name based on collection type
+			// BEIR collections use "_id", VDBBench uses "id"
+			idField := "id"
+			if strings.HasPrefix(lt.collection, "beir_") {
+				idField = "_id"
+			}
+
+			// Use one of the clients to calculate recall (with correct field names)
+			recallCalc := NewRecallCalculatorWithFields(lt.getClient(), lt.collection, lt.vectorField, idField, qrels)
 
 			recallMetrics, err := recallCalc.CalculateRecall(
 				ctx,

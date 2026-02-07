@@ -241,7 +241,8 @@ func runLoadTest(cfg *config.Config, flags *Flags, apiKey, databaseURL, collecti
 }
 
 // loadQueriesAndQrelsIfNeeded detects if collection has BEIR or VDBBench data and loads queries/qrels
-// Business recall (qrels) is only loaded for full corpus (8M+ documents for BEIR, or VDBBench datasets)
+// For BEIR: loads human-labeled qrels for true business recall
+// For VDBBench: loads KNN neighbors for mathematical recall only
 func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, collection string) ([]datasource.CohereQuery, datasource.Qrels) {
 	// Connect to check collection schema
 	c, err := client.NewClient(ctx, client.Config{
@@ -261,11 +262,11 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
-	// Check for VDBBench schema first
+	// Check for VDBBench schema first (id: int64, emb: vector)
 	if collInfo.HasVDBBenchSchema {
 		datasetName := loadtest.DetectVDBBenchDataset(collInfo)
 		if datasetName != "" {
-			logger.Info("Detected VDBBench collection",
+			logger.Info("Detected VDBBench collection (ground truth = KNN neighbors)",
 				"dataset", datasetName,
 				"row_count", collInfo.RowCount,
 				"vector_dim", collInfo.VectorDim)
@@ -277,7 +278,14 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
-	// Check for BEIR schema
+	// Check if this is a BEIR dataset collection (beir_fiqa, beir_trec-covid, etc.)
+	// These have human-labeled qrels for true business recall
+	if strings.HasPrefix(collection, "beir_") {
+		datasetName := strings.TrimPrefix(collection, "beir_")
+		return loadBEIRQueriesAndQrels(datasetName)
+	}
+
+	// Check for BEIR/MSMARCO schema (_id: varchar, title, text, emb: vector)
 	if !collInfo.HasBEIRSchema {
 		logger.Info("Collection does not have BEIR schema, using random queries")
 		return nil, nil
@@ -285,7 +293,7 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 
 	logger.Info("Detected BEIR collection", "row_count", collInfo.RowCount, "is_full_corpus", collInfo.IsFullCorpus)
 
-	// Initialize downloader and readers
+	// Initialize downloader and readers for MSMARCO
 	downloader := datasource.NewCohereDownloader("")
 	queryReader := datasource.NewCohereQueryReader(downloader)
 
@@ -296,7 +304,7 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
-	// Only load qrels for full corpus - business recall doesn't make sense otherwise
+	// Only load q for full corpus - business recall doesn't make sense otherwise
 	// because the relevant documents won't be in a partial corpus
 	var qrels datasource.Qrels
 	if collInfo.IsFullCorpus {
@@ -305,7 +313,7 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		if err != nil {
 			logger.Warn("Failed to load qrels", "error", err)
 		} else {
-			logger.Info("Loaded qrels for full corpus", "qrels_queries", len(qrels))
+			logger.Info("Loaded qrels for full corpus (human-labeled)", "qrels_queries", len(qrels))
 		}
 	} else {
 		logger.Info("Skipping qrels loading - business recall requires full corpus (8M+ docs)",
@@ -314,6 +322,35 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 	}
 
 	logger.Info("Loaded BEIR queries", "queries", len(queries))
+
+	return queries, qrels
+}
+
+// loadBEIRQueriesAndQrels loads queries and human-labeled qrels for a BEIR dataset
+func loadBEIRQueriesAndQrels(datasetName string) ([]datasource.CohereQuery, datasource.Qrels) {
+	loader, err := datasource.NewBEIRDataLoader(datasetName, "")
+	if err != nil {
+		logger.Warn("Failed to create BEIR loader", "dataset", datasetName, "error", err)
+		return nil, nil
+	}
+
+	// Load queries (use test split for BEIR)
+	queries, err := loader.LoadQueries("test", 10000)
+	if err != nil {
+		logger.Warn("Failed to load BEIR queries", "dataset", datasetName, "error", err)
+		return nil, nil
+	}
+	logger.Info("Loaded BEIR queries", "dataset", datasetName, "count", len(queries))
+
+	// Load human-labeled qrels
+	qrels, err := loader.LoadQrels("test")
+	if err != nil {
+		logger.Warn("Failed to load BEIR qrels (human-labeled)", "dataset", datasetName, "error", err)
+		return queries, nil
+	}
+	logger.Info("Loaded BEIR qrels (human-labeled relevance judgments)",
+		"dataset", datasetName,
+		"queries_with_qrels", len(qrels))
 
 	return queries, qrels
 }

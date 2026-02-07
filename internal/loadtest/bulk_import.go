@@ -28,9 +28,10 @@ const (
 
 // VDBBenchDataset represents a VDBBench benchmark dataset
 type VDBBenchDataset struct {
-	Name      string
-	VectorDim int
-	NumRows   int
+	Name       string
+	VectorDim  int
+	NumRows    int
+	MetricType entity.MetricType // L2 for SIFT/GIST, COSINE for Cohere/OpenAI/Glove
 }
 
 // BulkImportRequest represents a request to the Zilliz Cloud import API
@@ -314,18 +315,19 @@ const VDBBenchHTTPSBaseURL = "https://assets.zilliz.com/benchmark"
 func SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName string, metricType entity.MetricType) error {
 	ctx := context.Background()
 
-	// Dataset configurations
+	// Dataset configurations with correct metric types from VDBBench
+	// Cohere, OpenAI, Glove use COSINE; SIFT, GIST use L2
 	datasets := map[string]VDBBenchDataset{
-		"cohere_small_100k":  {Name: "cohere_small_100k", VectorDim: 768, NumRows: 100000},
-		"cohere_medium_1m":   {Name: "cohere_medium_1m", VectorDim: 768, NumRows: 1000000},
-		"openai_small_50k":   {Name: "openai_small_50k", VectorDim: 1536, NumRows: 50000},
-		"openai_medium_500k": {Name: "openai_medium_500k", VectorDim: 1536, NumRows: 500000},
-		"sift_small_500k":    {Name: "sift_small_500k", VectorDim: 128, NumRows: 500000},
-		"sift_medium_5m":     {Name: "sift_medium_5m", VectorDim: 128, NumRows: 5000000},
-		"gist_small_100k":    {Name: "gist_small_100k", VectorDim: 960, NumRows: 100000},
-		"gist_medium_1m":     {Name: "gist_medium_1m", VectorDim: 960, NumRows: 1000000},
-		"glove_small_100k":   {Name: "glove_small_100k", VectorDim: 200, NumRows: 100000},
-		"glove_medium_1m":    {Name: "glove_medium_1m", VectorDim: 200, NumRows: 1000000},
+		"cohere_small_100k":  {Name: "cohere_small_100k", VectorDim: 768, NumRows: 100000, MetricType: entity.COSINE},
+		"cohere_medium_1m":   {Name: "cohere_medium_1m", VectorDim: 768, NumRows: 1000000, MetricType: entity.COSINE},
+		"openai_small_50k":   {Name: "openai_small_50k", VectorDim: 1536, NumRows: 50000, MetricType: entity.COSINE},
+		"openai_medium_500k": {Name: "openai_medium_500k", VectorDim: 1536, NumRows: 500000, MetricType: entity.COSINE},
+		"sift_small_500k":    {Name: "sift_small_500k", VectorDim: 128, NumRows: 500000, MetricType: entity.L2},
+		"sift_medium_5m":     {Name: "sift_medium_5m", VectorDim: 128, NumRows: 5000000, MetricType: entity.L2},
+		"gist_small_100k":    {Name: "gist_small_100k", VectorDim: 960, NumRows: 100000, MetricType: entity.L2},
+		"gist_medium_1m":     {Name: "gist_medium_1m", VectorDim: 960, NumRows: 1000000, MetricType: entity.L2},
+		"glove_small_100k":   {Name: "glove_small_100k", VectorDim: 200, NumRows: 100000, MetricType: entity.COSINE},
+		"glove_medium_1m":    {Name: "glove_medium_1m", VectorDim: 200, NumRows: 1000000, MetricType: entity.COSINE},
 	}
 
 	dataset, ok := datasets[datasetName]
@@ -338,10 +340,14 @@ func SeedDatabaseWithVDBBench(apiKey, databaseURL, collection, datasetName strin
 		collection = datasetName
 	}
 
+	// Use the dataset's correct metric type (ignore passed metricType for public datasets)
+	metricType = dataset.MetricType
+
 	logger.Info("Starting bulk import from public dataset",
 		"collection", collection,
 		"dataset", datasetName,
 		"vector_dim", dataset.VectorDim,
+		"metric_type", metricType,
 		"expected_rows", dataset.NumRows)
 
 	// Create client for collection management
@@ -658,4 +664,280 @@ func waitForImportJobWithProgress(apiKey, clusterID, jobID string) error {
 			time.Sleep(ImportJobCheckInterval)
 		}
 	}
+}
+
+// SeedDatabaseWithBEIR seeds the database using a BEIR dataset from HuggingFace (with human-labeled qrels)
+// This uses streaming insertion since BEIR datasets are on HuggingFace, not Zilliz S3
+func SeedDatabaseWithBEIR(apiKey, databaseURL, collection, datasetName string, batchSize int) error {
+	ctx := context.Background()
+
+	// Get dataset info
+	dataset, err := datasource.GetBEIRDataset(datasetName)
+	if err != nil {
+		return err
+	}
+
+	// Limit batch size for BEIR due to large text fields and 1024-dim vectors
+	// gRPC limit is 64MB, so we need smaller batches
+	if batchSize > 2000 {
+		batchSize = 2000
+	}
+
+	// Use dataset name as collection name if not specified
+	if collection == "" || collection == "loadtest_collection" {
+		collection = "beir_" + datasetName
+	}
+
+	logger.Info("Starting BEIR dataset seeding (with human-labeled qrels)",
+		"collection", collection,
+		"dataset", datasetName,
+		"vector_dim", dataset.VectorDim,
+		"metric_type", dataset.MetricType,
+		"expected_rows", dataset.CorpusSize)
+
+	// Create client for collection management
+	milvusClient, err := CreateZillizClient(apiKey, databaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+	defer milvusClient.Close()
+
+	// Create collection with BEIR schema
+	if err := createBEIRCollection(ctx, milvusClient, collection, dataset.VectorDim, dataset.MetricType); err != nil {
+		return fmt.Errorf("failed to create collection: %w", err)
+	}
+
+	// Initialize BEIR data loader
+	loader, err := datasource.NewBEIRDataLoader(datasetName, "")
+	if err != nil {
+		return err
+	}
+
+	// Download corpus if needed
+	corpusPath, err := loader.EnsureCorpusFile()
+	if err != nil {
+		return fmt.Errorf("failed to ensure corpus file: %w", err)
+	}
+
+	// Stream data into collection
+	if err := streamBEIRCorpus(ctx, milvusClient, apiKey, databaseURL, collection, corpusPath, batchSize); err != nil {
+		return fmt.Errorf("failed to stream corpus: %w", err)
+	}
+
+	// Load collection
+	loadCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	logger.Info("Loading collection into memory")
+	if err := FlushAndLoadCollection(loadCtx, milvusClient, collection); err != nil {
+		return fmt.Errorf("failed to load collection: %w", err)
+	}
+
+	// Verify row count
+	stats, err := milvusClient.GetCollectionStatistics(ctx, collection)
+	if err == nil {
+		if rowCount, ok := stats["row_count"]; ok {
+			logger.Info("Collection loaded", "row_count", rowCount)
+		}
+	}
+
+	return nil
+}
+
+// createBEIRCollection creates a collection with BEIR schema
+func createBEIRCollection(ctx context.Context, milvusClient client.Client, collection string, vectorDim int, metricType entity.MetricType) error {
+	// Check if collection exists
+	has, err := milvusClient.HasCollection(ctx, collection)
+	if err != nil {
+		return fmt.Errorf("failed to check collection: %w", err)
+	}
+
+	if has {
+		logger.Info("Dropping existing collection", "collection", collection)
+		if err := milvusClient.DropCollection(ctx, collection); err != nil {
+			return fmt.Errorf("failed to drop collection: %w", err)
+		}
+	}
+
+	// Create fields matching BEIR corpus schema: _id, title, text, emb
+	idField := entity.NewField().
+		WithName("_id").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(256).
+		WithIsPrimaryKey(true).
+		WithIsAutoID(false)
+
+	titleField := entity.NewField().
+		WithName("title").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(2048)
+
+	textField := entity.NewField().
+		WithName("text").
+		WithDataType(entity.FieldTypeVarChar).
+		WithMaxLength(65535)
+
+	embField := entity.NewField().
+		WithName("emb").
+		WithDataType(entity.FieldTypeFloatVector).
+		WithDim(int64(vectorDim))
+
+	schema := &entity.Schema{
+		CollectionName: collection,
+		AutoID:         false,
+		Fields:         []*entity.Field{idField, titleField, textField, embField},
+	}
+
+	logger.Info("Creating collection for BEIR import",
+		"collection", collection,
+		"vector_dim", vectorDim,
+		"metric_type", metricType)
+
+	if err := milvusClient.CreateCollection(ctx, schema, 1); err != nil {
+		return fmt.Errorf("failed to create collection: %w", err)
+	}
+
+	logger.Info("Collection created successfully", "collection", collection)
+
+	// Create index
+	logger.Info("Creating index on vector field", "collection", collection)
+
+	idx, err := entity.NewIndexAUTOINDEX(metricType)
+	if err != nil {
+		return fmt.Errorf("failed to create index config: %w", err)
+	}
+
+	if err := milvusClient.CreateIndex(ctx, collection, "emb", idx, false); err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	logger.Info("Index created successfully", "collection", collection)
+
+	return nil
+}
+
+// beirInserter manages batch insertion with automatic reconnection for BEIR data
+type beirInserter struct {
+	apiKey      string
+	databaseURL string
+	collection  string
+	client      client.Client
+}
+
+func newBEIRInserter(apiKey, databaseURL, collection string, c client.Client) *beirInserter {
+	return &beirInserter{
+		apiKey:      apiKey,
+		databaseURL: databaseURL,
+		collection:  collection,
+		client:      c,
+	}
+}
+
+func (ins *beirInserter) reconnect() error {
+	if ins.client != nil {
+		ins.client.Close()
+	}
+	logger.Info("Reconnecting to Zilliz Cloud")
+	c, err := CreateZillizClient(ins.apiKey, ins.databaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to reconnect: %w", err)
+	}
+	ins.client = c
+	return nil
+}
+
+// insertBatch inserts a batch of BEIR records with retry and reconnection
+func (ins *beirInserter) insertBatch(ctx context.Context, ids, titles, texts []string, vectors [][]float32, batchNum int) error {
+	idCol := entity.NewColumnVarChar("_id", ids)
+	titleCol := entity.NewColumnVarChar("title", titles)
+	textCol := entity.NewColumnVarChar("text", texts)
+	vecCol := entity.NewColumnFloatVector("emb", len(vectors[0]), vectors)
+
+	maxRetries := 8
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err := ins.client.Insert(ctx, ins.collection, "", idCol, titleCol, textCol, vecCol)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		logger.Warn("Batch insert failed", "batch", batchNum, "attempt", attempt, "error", err)
+
+		// Reconnect on TLS/connection errors
+		errStr := strings.ToLower(err.Error())
+		if strings.Contains(errStr, "tls") || strings.Contains(errStr, "unavailable") ||
+			strings.Contains(errStr, "connection") || strings.Contains(errStr, "eof") {
+			if reconnErr := ins.reconnect(); reconnErr != nil {
+				logger.Error("Reconnection failed", "error", reconnErr)
+			}
+		}
+
+		if attempt < maxRetries {
+			delay := time.Duration(attempt) * time.Second
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+			time.Sleep(delay)
+		}
+	}
+
+	return fmt.Errorf("failed to insert batch %d after %d retries: %w", batchNum, maxRetries, lastErr)
+}
+
+// streamBEIRCorpus streams data from a BEIR corpus parquet file to the collection
+func streamBEIRCorpus(ctx context.Context, milvusClient client.Client, apiKey, databaseURL, collection, parquetPath string, batchSize int) error {
+	logger.Info("Streaming BEIR corpus", "path", parquetPath, "batch_size", batchSize)
+
+	ins := newBEIRInserter(apiKey, databaseURL, collection, milvusClient)
+
+	totalInserted := 0
+	batchNum := 0
+
+	ids := make([]string, 0, batchSize)
+	titles := make([]string, 0, batchSize)
+	texts := make([]string, 0, batchSize)
+	vectors := make([][]float32, 0, batchSize)
+
+	err := datasource.StreamBEIRCorpusParquetPy(parquetPath, func(id, title, text string, emb []float32) error {
+		ids = append(ids, id)
+		titles = append(titles, title)
+		texts = append(texts, text)
+		vectors = append(vectors, emb)
+
+		if len(ids) >= batchSize {
+			batchNum++
+			if err := ins.insertBatch(ctx, ids, titles, texts, vectors, batchNum); err != nil {
+				return err
+			}
+			totalInserted += len(ids)
+
+			if batchNum%10 == 0 {
+				logger.Info("BEIR corpus batch progress", "batch", batchNum, "total_inserted", totalInserted)
+			}
+
+			ids = ids[:0]
+			titles = titles[:0]
+			texts = texts[:0]
+			vectors = vectors[:0]
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Insert remaining
+	if len(ids) > 0 {
+		batchNum++
+		if err := ins.insertBatch(ctx, ids, titles, texts, vectors, batchNum); err != nil {
+			return err
+		}
+		totalInserted += len(ids)
+	}
+
+	logger.Info("BEIR corpus streaming completed", "total_inserted", totalInserted, "batches", batchNum)
+	return nil
 }
