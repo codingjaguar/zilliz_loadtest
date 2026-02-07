@@ -115,35 +115,33 @@ For large-scale performance testing with 8.8M MS MARCO passages:
 
 ## Search Quality Metrics
 
-The tool reports industry-standard metrics:
-
 | Metric | Definition | Ground Truth |
 |--------|-----------|--------------|
-| **Recall** | % of true nearest neighbors found by ANN index | Exact KNN search |
-| **Recall@K** | % of relevant docs retrieved in top-K | Human qrels |
-| **Precision@K** | % of top-K results that are relevant | Human qrels |
+| **Math Recall** | % of exact KNN neighbors found by ANN index | Brute-force search |
+| **Biz Recall** | % of human-relevant docs retrieved | Human qrels |
+| **NDCG** | Normalized Discounted Cumulative Gain (rank-aware) | Human qrels |
 
 **Example output:**
 ```
-QPS | P50(ms) | Success% | Recall  | Recall@K | Prec@K
-----+---------+----------+---------+----------+--------
-10  |   54.00 |   100.0% |  96.90% |   54.53% |  13.20%
+QPS | P50(ms) | Success% | Math Recall | Biz Recall |   NDCG
+----+---------+----------+-------------+------------+--------
+10  |   54.00 |   100.0% |      96.90% |     54.53% | 0.4521
 ```
 
 **What the metrics tell you:**
-- **Recall 97%**: The ANN index finds 97% of exact nearest neighbors (index quality)
-- **Recall@K 55%**: Only 55% of human-relevant docs appear in results (retrieval quality)
-- **Prec@K 13%**: ~1.3 of 10 results are human-relevant (result quality)
-
-The gap between Recall and Recall@K shows that **vector similarity ≠ semantic relevance** - finding nearest neighbors doesn't guarantee finding relevant documents.
+- **Math Recall 97%**: Index finds 97% of exact nearest neighbors
+- **Biz Recall 55%**: Only 55% of human-relevant docs found
+- **NDCG 0.45**: Rank-aware relevance score (1.0 = perfect ranking)
 
 **Search level impact:**
 ```
-Level 1:  Recall 85%,  Recall@K 54%   (fast, approximate)
-Level 10: Recall 100%, Recall@K 54%  (slow, exact)
+Level 1:  Math Recall 85%,  Biz Recall 54%,  NDCG 0.42
+Level 3:  Math Recall 95%,  Biz Recall 54%,  NDCG 0.44
+Level 5:  Math Recall 99%,  Biz Recall 54%,  NDCG 0.45
+Level 10: Math Recall 100%, Biz Recall 54%,  NDCG 0.45
 ```
 
-Higher search levels improve index accuracy but don't improve human relevance - that's determined by the embedding model and data quality.
+Higher search levels improve Math Recall (index accuracy) but Biz Recall stays constant - that's determined by the embedding model quality, not the index.
    - Use case: Evaluate real-world search quality and user satisfaction
    - Example: 85% business recall means 85% of relevant docs were returned
 

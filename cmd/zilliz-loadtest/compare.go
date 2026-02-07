@@ -41,9 +41,9 @@ func displayResults(results []loadtest.TestResult) {
 
 	// Header
 	if hasRecall {
-		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %10s | %10s | %10s\n",
-			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Recall", "Recall@K", "Prec@K")
-		fmt.Println(strings.Repeat("-", 160))
+		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %11s | %10s | %8s\n",
+			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Math Recall", "Biz Recall", "NDCG")
+		fmt.Println(strings.Repeat("-", 155))
 	} else {
 		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
 			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
@@ -53,10 +53,10 @@ func displayResults(results []loadtest.TestResult) {
 	// Data rows
 	for _, r := range results {
 		if hasRecall && r.RecallTested {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %9.2f%% | %9.2f%% | %9.2f%%\n",
-				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall, r.BusinessPrecision)
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %10.2f%% | %9.2f%% | %7.4f\n",
+				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall, r.NDCG)
 		} else if hasRecall {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %10s | %10s | %10s\n",
+			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %11s | %10s | %8s\n",
 				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, "N/A", "N/A", "N/A")
 		} else {
 			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
@@ -69,9 +69,9 @@ func displayResults(results []loadtest.TestResult) {
 	// Print recall explanation if available
 	if hasRecall {
 		fmt.Println("\nMetrics:")
-		fmt.Println("  Recall:    ANN accuracy vs exact search (index quality)")
-		fmt.Println("  Recall@K:  Relevant docs found / total relevant (retrieval quality)")
-		fmt.Println("  Prec@K:    Relevant docs / K results (result relevance)")
+		fmt.Println("  Math Recall: ANN accuracy vs exact KNN search")
+		fmt.Println("  Biz Recall:  Relevant docs found vs human judgments (qrels)")
+		fmt.Println("  NDCG:        Normalized Discounted Cumulative Gain (rank-aware relevance)")
 	}
 }
 

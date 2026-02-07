@@ -55,7 +55,7 @@ type TestResult struct {
 	SuccessRate        float64 // percentage
 	MathematicalRecall float64 // recall vs brute force (%)
 	BusinessRecall     float64 // recall vs ground truth qrels (%)
-	BusinessPrecision  float64 // precision vs ground truth qrels (%)
+	NDCG               float64 // normalized discounted cumulative gain
 	RecallTested       bool    // whether recall was calculated
 }
 

@@ -3,6 +3,7 @@ package loadtest
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"zilliz-loadtest/internal/datasource"
 	"zilliz-loadtest/internal/logger"
@@ -11,11 +12,11 @@ import (
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
-// RecallMetrics holds recall and precision measurements
+// RecallMetrics holds recall and NDCG measurements
 type RecallMetrics struct {
 	MathematicalRecall float64 // Recall vs brute force search (ANN accuracy)
-	BusinessRecall     float64 // Recall@K: relevant docs found / total relevant
-	BusinessPrecision  float64 // Precision@K: relevant docs found / K
+	BusinessRecall     float64 // Recall: relevant docs found / total relevant
+	NDCG               float64 // Normalized Discounted Cumulative Gain
 	QueriesTested      int
 }
 
@@ -93,7 +94,7 @@ func (rc *RecallCalculator) CalculateRecall(
 
 	var mathRecallSum float64
 	var bizRecallSum float64
-	var bizPrecisionSum float64
+	var ndcgSum float64
 	queriesWithQrels := 0
 
 	// Sample a subset of queries for recall calculation (to avoid long runtime)
@@ -119,12 +120,12 @@ func (rc *RecallCalculator) CalculateRecall(
 			mathRecallSum += mathRecall
 		}
 
-		// Calculate business precision and recall (ANN vs ground truth qrels)
+		// Calculate business recall and NDCG (ANN vs ground truth qrels)
 		if rc.qrels != nil && len(rc.qrels[query.ID]) > 0 {
 			relevantDocs := rc.qrels.GetRelevantDocs(query.ID)
-			recall, precision := calculateBusinessMetrics(annResults, relevantDocs)
+			recall, ndcg := calculateBusinessMetrics(annResults, relevantDocs)
 			bizRecallSum += recall
-			bizPrecisionSum += precision
+			ndcgSum += ndcg
 			queriesWithQrels++
 
 			// Debug: Check if any relevant docs are in our results
@@ -134,7 +135,7 @@ func (rc *RecallCalculator) CalculateRecall(
 					"relevant_docs", relevantDocs,
 					"ann_results", annResults[:min(5, len(annResults))],
 					"recall", recall,
-					"precision", precision)
+					"ndcg", ndcg)
 			}
 		}
 	}
@@ -142,19 +143,19 @@ func (rc *RecallCalculator) CalculateRecall(
 	metrics := &RecallMetrics{
 		MathematicalRecall: mathRecallSum / float64(sampleSize),
 		BusinessRecall:     0,
-		BusinessPrecision:  0,
+		NDCG:               0,
 		QueriesTested:      sampleSize,
 	}
 
 	if queriesWithQrels > 0 {
 		metrics.BusinessRecall = bizRecallSum / float64(queriesWithQrels)
-		metrics.BusinessPrecision = bizPrecisionSum / float64(queriesWithQrels)
+		metrics.NDCG = ndcgSum / float64(queriesWithQrels)
 	}
 
 	logger.Info("Recall calculation completed",
 		"math_recall", fmt.Sprintf("%.2f%%", metrics.MathematicalRecall*100),
-		"business_recall", fmt.Sprintf("%.2f%%", metrics.BusinessRecall*100),
-		"business_precision", fmt.Sprintf("%.2f%%", metrics.BusinessPrecision*100),
+		"biz_recall", fmt.Sprintf("%.2f%%", metrics.BusinessRecall*100),
+		"ndcg", fmt.Sprintf("%.4f", metrics.NDCG),
 		"queries_tested", sampleSize)
 
 	return metrics, nil
@@ -300,10 +301,10 @@ func calculateOverlap(annResults, groundTruth []string) float64 {
 	return float64(matches) / float64(len(groundTruth))
 }
 
-// calculateBusinessMetrics computes recall and precision against qrels ground truth
+// calculateBusinessMetrics computes recall and NDCG against qrels ground truth
 // For VDBBench: relevantDocs contains top-K neighbors, compare against same K
 // For BEIR: relevantDocs contains sparse human-labeled relevant docs (typically 1-5)
-// Returns: (recall, precision)
+// Returns: (recall, ndcg)
 func calculateBusinessMetrics(annResults, relevantDocs []string) (float64, float64) {
 	if len(relevantDocs) == 0 || len(annResults) == 0 {
 		return 0, 0
@@ -335,21 +336,34 @@ func calculateBusinessMetrics(annResults, relevantDocs []string) (float64, float
 		truthSet[id] = true
 	}
 
-	// Count matches
+	// Count matches and calculate DCG
 	matches := 0
-	for _, id := range annResults {
+	dcg := 0.0
+	for i, id := range annResults {
 		if truthSet[id] {
 			matches++
+			// DCG: relevance / log2(rank + 1), using binary relevance (1 if relevant)
+			dcg += 1.0 / math.Log2(float64(i+2)) // i+2 because rank starts at 1, log2(1)=0
 		}
+	}
+
+	// Calculate IDCG (ideal DCG - all relevant docs at top positions)
+	idcg := 0.0
+	numRelevant := min(len(groundTruth), k)
+	for i := 0; i < numRelevant; i++ {
+		idcg += 1.0 / math.Log2(float64(i+2))
 	}
 
 	// Recall = relevant docs found / total relevant docs
 	recall := float64(matches) / float64(len(groundTruth))
 
-	// Precision = relevant docs found / K (results returned)
-	precision := float64(matches) / float64(k)
+	// NDCG = DCG / IDCG
+	ndcg := 0.0
+	if idcg > 0 {
+		ndcg = dcg / idcg
+	}
 
-	return recall, precision
+	return recall, ndcg
 }
 
 // sampleIndices returns a random sample of indices
