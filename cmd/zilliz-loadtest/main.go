@@ -298,10 +298,13 @@ func loadQueriesAndQrelsIfNeeded(ctx context.Context, apiKey, databaseURL, colle
 		return nil, nil
 	}
 
-	// Check if this is a BEIR dataset collection (beir_fiqa, beir_trec-covid, etc.)
+	// Check if this is a BEIR dataset collection (beir_fiqa, beir_trec_covid, etc.)
 	// These have human-labeled qrels for true business recall
+	// Collection names use underscores, but HuggingFace uses hyphens
 	if strings.HasPrefix(collection, "beir_") {
 		datasetName := strings.TrimPrefix(collection, "beir_")
+		// Convert underscores back to hyphens for HuggingFace dataset names
+		datasetName = strings.ReplaceAll(datasetName, "_", "-")
 		return loadBEIRQueriesAndQrels(datasetName)
 	}
 

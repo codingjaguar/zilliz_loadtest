@@ -218,12 +218,17 @@ func downloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer out.Close()
 
 	// Copy with progress reporting
 	written, err := io.Copy(out, resp.Body)
 	if err != nil {
+		out.Close()
 		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// Close file before rename (important on some OS)
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
 	// Move temp file to final location

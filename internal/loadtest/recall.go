@@ -128,16 +128,7 @@ func (rc *RecallCalculator) CalculateRecall(
 			ndcgSum += ndcg
 			queriesWithQrels++
 
-			// Debug: Check if any relevant docs are in our results
-			if queriesWithQrels <= 3 {
-				logger.Debug("Business metrics debug",
-					"query_id", query.ID,
-					"relevant_docs", relevantDocs,
-					"ann_results", annResults[:min(5, len(annResults))],
-					"recall", recall,
-					"ndcg", ndcg)
 			}
-		}
 	}
 
 	metrics := &RecallMetrics{
@@ -312,21 +303,22 @@ func calculateBusinessMetrics(annResults, relevantDocs []string) (float64, float
 
 	k := len(annResults)
 
-	// Determine if this is VDBBench (many neighbors) or BEIR (sparse qrels)
-	// VDBBench provides 1000 neighbors, BEIR typically has 1-10 relevant docs
-	isVDBBench := len(relevantDocs) > 100
+	// Determine if this is VDBBench (exactly 1000 neighbors) or BEIR (variable qrels)
+	// VDBBench provides exactly 1000 ordered neighbors per query
+	// BEIR has variable number of unordered relevant docs (could be 1-1000+)
+	isVDBBench := len(relevantDocs) == 1000
 
 	var groundTruth []string
 
 	if isVDBBench {
-		// VDBBench: compare against top-K ground truth neighbors
+		// VDBBench: compare against top-K ground truth neighbors (ordered by distance)
 		if len(relevantDocs) > k {
 			groundTruth = relevantDocs[:k]
 		} else {
 			groundTruth = relevantDocs
 		}
 	} else {
-		// BEIR: compare against all human-labeled relevant docs
+		// BEIR: compare against all human-labeled relevant docs (unordered)
 		groundTruth = relevantDocs
 	}
 

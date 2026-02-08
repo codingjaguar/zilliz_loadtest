@@ -176,10 +176,13 @@ func (r *CohereQrelsReader) readQrelsFile(filePath string) (Qrels, error) {
 }
 
 // GetRelevantDocs returns the list of relevant document IDs for a query
+// Only returns documents with relevance score > 0
 func (q Qrels) GetRelevantDocs(queryID string) []string {
-	docs := make([]string, 0, len(q[queryID]))
-	for docID := range q[queryID] {
-		docs = append(docs, docID)
+	docs := make([]string, 0)
+	for docID, score := range q[queryID] {
+		if score > 0 {
+			docs = append(docs, docID)
+		}
 	}
 	return docs
 }

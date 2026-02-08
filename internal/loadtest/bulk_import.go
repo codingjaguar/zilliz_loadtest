@@ -684,8 +684,9 @@ func SeedDatabaseWithBEIR(apiKey, databaseURL, collection, datasetName string, b
 	}
 
 	// Use dataset name as collection name if not specified
+	// Replace hyphens with underscores (collection names can't have hyphens)
 	if collection == "" || collection == "loadtest_collection" {
-		collection = "beir_" + datasetName
+		collection = "beir_" + strings.ReplaceAll(datasetName, "-", "_")
 	}
 
 	logger.Info("Starting BEIR dataset seeding (with human-labeled qrels)",
