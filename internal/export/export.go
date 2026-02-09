@@ -85,7 +85,7 @@ func exportCSV(results []loadtest.TestResult, outputPath string) error {
 
 	// Write header
 	header := []string{
-		"QPS", "P50 (ms)", "P90 (ms)", "P95 (ms)", "P99 (ms)",
+		"QPS", "Level", "P50 (ms)", "P90 (ms)", "P95 (ms)", "P99 (ms)",
 		"Avg (ms)", "Min (ms)", "Max (ms)", "Total Queries",
 		"Errors", "Success Rate (%)",
 	}
@@ -97,6 +97,7 @@ func exportCSV(results []loadtest.TestResult, outputPath string) error {
 	for _, result := range results {
 		row := []string{
 			fmt.Sprintf("%d", result.QPS),
+			fmt.Sprintf("%d", result.SearchLevel),
 			fmt.Sprintf("%.2f", result.P50Latency),
 			fmt.Sprintf("%.2f", result.P90Latency),
 			fmt.Sprintf("%.2f", result.P95Latency),

@@ -90,12 +90,14 @@ func (rc *RecallCalculator) CalculateRecall(
 
 	logger.Info("Calculating recall metrics",
 		"queries", len(queries),
-		"topK", topK)
+		"topK", topK,
+		"search_level", rc.searchLevel)
 
 	var mathRecallSum float64
 	var bizRecallSum float64
 	var ndcgSum float64
 	queriesWithQrels := 0
+	validQueries := 0
 
 	// Sample a subset of queries for recall calculation (to avoid long runtime)
 	sampleSize := min(100, len(queries))
@@ -104,21 +106,24 @@ func (rc *RecallCalculator) CalculateRecall(
 	for _, idx := range queryIndices {
 		query := queries[idx]
 
-		// Get ANN search results
+		// Get ANN search results at configured level
 		annResults, err := rc.search(ctx, query.Embedding, topK, metricType, searchParams)
 		if err != nil {
 			logger.Warn("Failed to get ANN results", "query_id", query.ID, "error", err)
 			continue
 		}
 
-		// Calculate mathematical recall (ANN vs brute force)
-		bruteResults, err := rc.bruteForceSearch(ctx, query.Embedding, topK, metricType)
+		// Get ground truth using level=10 (most accurate ANN)
+		groundTruth, err := rc.searchAtLevel(ctx, query.Embedding, topK, metricType, 10)
 		if err != nil {
-			logger.Warn("Failed to get brute force results", "query_id", query.ID, "error", err)
-		} else {
-			mathRecall := calculateOverlap(annResults, bruteResults)
-			mathRecallSum += mathRecall
+			logger.Warn("Failed to get ground truth", "query_id", query.ID, "error", err)
+			continue
 		}
+
+		// Calculate math recall: ANN at configured level vs level=10
+		mathRecall := calculateOverlap(annResults, groundTruth)
+		mathRecallSum += mathRecall
+		validQueries++
 
 		// Calculate business recall and NDCG (ANN vs ground truth qrels)
 		if rc.qrels != nil && len(rc.qrels[query.ID]) > 0 {
@@ -127,15 +132,18 @@ func (rc *RecallCalculator) CalculateRecall(
 			bizRecallSum += recall
 			ndcgSum += ndcg
 			queriesWithQrels++
+		}
+	}
 
-			}
+	if validQueries == 0 {
+		return nil, fmt.Errorf("no valid queries for recall calculation")
 	}
 
 	metrics := &RecallMetrics{
-		MathematicalRecall: mathRecallSum / float64(sampleSize),
+		MathematicalRecall: mathRecallSum / float64(validQueries),
 		BusinessRecall:     0,
 		NDCG:               0,
-		QueriesTested:      sampleSize,
+		QueriesTested:      validQueries,
 	}
 
 	if queriesWithQrels > 0 {
@@ -147,7 +155,7 @@ func (rc *RecallCalculator) CalculateRecall(
 		"math_recall", fmt.Sprintf("%.2f%%", metrics.MathematicalRecall*100),
 		"biz_recall", fmt.Sprintf("%.2f%%", metrics.BusinessRecall*100),
 		"ndcg", fmt.Sprintf("%.4f", metrics.NDCG),
-		"queries_tested", sampleSize)
+		"queries_tested", validQueries)
 
 	return metrics, nil
 }
@@ -160,66 +168,18 @@ func (rc *RecallCalculator) search(
 	metricType entity.MetricType,
 	searchParams entity.SearchParam,
 ) ([]string, error) {
-	// Use search level parameter for ANN search
-	sp := &SearchParamWithLevel{Level: rc.searchLevel}
-
-	results, err := rc.client.Search(
-		ctx,
-		rc.collection,
-		[]string{},
-		"",
-		[]string{rc.idField},
-		[]entity.Vector{entity.FloatVector(vector)},
-		rc.vectorField,
-		metricType,
-		topK,
-		sp,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if len(results) == 0 {
-		return []string{}, nil
-	}
-
-	// Extract IDs
-	ids := make([]string, 0, topK)
-	idCol := results[0].Fields.GetColumn(rc.idField)
-	if idCol == nil {
-		return []string{}, nil
-	}
-
-	// Handle both Int64 and VarChar IDs
-	if intCol, ok := idCol.(*entity.ColumnInt64); ok {
-		for i := 0; i < results[0].ResultCount; i++ {
-			val, err := intCol.ValueByIdx(i)
-			if err == nil {
-				ids = append(ids, fmt.Sprintf("%d", val))
-			}
-		}
-	} else if strCol, ok := idCol.(*entity.ColumnVarChar); ok {
-		for i := 0; i < results[0].ResultCount; i++ {
-			val, err := strCol.ValueByIdx(i)
-			if err == nil {
-				ids = append(ids, val)
-			}
-		}
-	}
-
-	return ids, nil
+	return rc.searchAtLevel(ctx, vector, topK, metricType, rc.searchLevel)
 }
 
-// bruteForceSearch performs exact search (always uses flat/exact search, ignoring search level)
-func (rc *RecallCalculator) bruteForceSearch(
+// searchAtLevel performs ANN search at a specific level
+func (rc *RecallCalculator) searchAtLevel(
 	ctx context.Context,
 	vector []float32,
 	topK int,
 	metricType entity.MetricType,
+	level int,
 ) ([]string, error) {
-	// Use flat search which is exact (search level 10 = highest accuracy)
-	sp := &SearchParamWithLevel{Level: 10}
+	sp := &SearchParamWithLevel{Level: level}
 
 	results, err := rc.client.Search(
 		ctx,
@@ -269,21 +229,19 @@ func (rc *RecallCalculator) bruteForceSearch(
 	return ids, nil
 }
 
-// calculateOverlap computes recall between two result sets
-func calculateOverlap(annResults, groundTruth []string) float64 {
+// calculateOverlap calculates the overlap ratio between two result sets
+func calculateOverlap(results, groundTruth []string) float64 {
 	if len(groundTruth) == 0 {
 		return 0
 	}
 
-	// Create set from ground truth
 	truthSet := make(map[string]bool)
 	for _, id := range groundTruth {
 		truthSet[id] = true
 	}
 
-	// Count matches
 	matches := 0
-	for _, id := range annResults {
+	for _, id := range results {
 		if truthSet[id] {
 			matches++
 		}

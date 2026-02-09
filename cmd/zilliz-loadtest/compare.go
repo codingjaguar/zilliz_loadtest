@@ -30,9 +30,9 @@ func displayResults(results []loadtest.TestResult) {
 
 	var sep string
 	if hasRecall {
-		sep = strings.Repeat("=", 165) // Wider table for recall/precision columns
+		sep = strings.Repeat("=", 175) // Wider table for recall/precision columns
 	} else {
-		sep = strings.Repeat("=", loadTestTableWidth)
+		sep = strings.Repeat("=", 115)
 	}
 
 	fmt.Println("\n" + sep)
@@ -41,26 +41,26 @@ func displayResults(results []loadtest.TestResult) {
 
 	// Header
 	if hasRecall {
-		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %11s | %10s | %8s\n",
-			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Math Recall", "Biz Recall", "NDCG")
-		fmt.Println(strings.Repeat("-", 155))
+		fmt.Printf("%-6s | %5s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s | %11s | %10s | %8s\n",
+			"QPS", "Level", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors", "Math Recall", "Biz Recall", "NDCG")
+		fmt.Println(strings.Repeat("-", 165))
 	} else {
-		fmt.Printf("%-6s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
-			"QPS", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
-		fmt.Println(strings.Repeat("-", loadTestTableWidth))
+		fmt.Printf("%-6s | %5s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %9s | %7s\n",
+			"QPS", "Level", "P50(ms)", "P90(ms)", "P95(ms)", "P99(ms)", "Avg(ms)", "Min(ms)", "Max(ms)", "Success%", "Errors")
+		fmt.Println(strings.Repeat("-", 115))
 	}
 
 	// Data rows
 	for _, r := range results {
 		if hasRecall && r.RecallTested {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %10.2f%% | %9.2f%% | %7.4f\n",
-				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall, r.NDCG)
+			fmt.Printf("%-6d | %5d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %10.2f%% | %9.2f%% | %7.4f\n",
+				r.QPS, r.SearchLevel, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, r.MathematicalRecall, r.BusinessRecall, r.NDCG)
 		} else if hasRecall {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %11s | %10s | %8s\n",
-				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, "N/A", "N/A", "N/A")
+			fmt.Printf("%-6d | %5d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d | %11s | %10s | %8s\n",
+				r.QPS, r.SearchLevel, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors, "N/A", "N/A", "N/A")
 		} else {
-			fmt.Printf("%-6d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
-				r.QPS, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors)
+			fmt.Printf("%-6d | %5d | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.1f%% | %7d\n",
+				r.QPS, r.SearchLevel, r.P50Latency, r.P90Latency, r.P95Latency, r.P99Latency, r.AvgLatency, r.MinLatency, r.MaxLatency, r.SuccessRate, r.Errors)
 		}
 	}
 
@@ -69,7 +69,8 @@ func displayResults(results []loadtest.TestResult) {
 	// Print recall explanation if available
 	if hasRecall {
 		fmt.Println("\nMetrics:")
-		fmt.Println("  Math Recall: ANN accuracy vs exact KNN search")
+		fmt.Println("  Level:       Search accuracy level (1-10, higher = more accurate)")
+		fmt.Println("  Math Recall: ANN accuracy vs level 10 search (ground truth)")
 		fmt.Println("  Biz Recall:  Relevant docs found vs human judgments (qrels)")
 		fmt.Println("  NDCG:        Normalized Discounted Cumulative Gain (rank-aware relevance)")
 	}

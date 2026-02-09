@@ -42,6 +42,7 @@ const (
 
 type TestResult struct {
 	QPS                int
+	SearchLevel        int     // search level used (1-10)
 	P50Latency         float64 // in milliseconds
 	P90Latency         float64 // in milliseconds
 	P95Latency         float64 // in milliseconds
@@ -378,6 +379,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 			"message", "This may indicate a configuration issue or all queries were cancelled")
 		return TestResult{
 			QPS:            targetQPS,
+			SearchLevel:    lt.searchLevel,
 			TotalQueries:   0,
 			Errors:         0,
 			ErrorBreakdown: make(map[ErrorType]int),
@@ -394,6 +396,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 		// Return result with errors but don't return error - this is a valid test outcome
 		return TestResult{
 			QPS:            targetQPS,
+			SearchLevel:    lt.searchLevel,
 			TotalQueries:   0,
 			Errors:         stats.errors,
 			ErrorBreakdown: stats.errorBreakdown,
@@ -422,6 +425,7 @@ func (lt *LoadTester) RunTest(ctx context.Context, targetQPS int, duration time.
 
 	return TestResult{
 		QPS:            targetQPS,
+		SearchLevel:    lt.searchLevel,
 		P50Latency:     p50,
 		P90Latency:     p90,
 		P95Latency:     p95,
