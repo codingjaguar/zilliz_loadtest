@@ -1,5 +1,6 @@
 # Binaries
 /zilliz-loadtest
+bin/
 *.exe
 *.exe~
 *.dll
