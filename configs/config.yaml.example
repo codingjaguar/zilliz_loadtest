@@ -7,45 +7,41 @@ database_url: "https://your-cluster.zillizcloud.com"
 
 # Default collection settings
 default_collection: "my_collection"
-default_vector_dim: 768
-default_metric_type: "L2"  # Options: L2, IP, COSINE
+default_vector_dim: 1024           # Cohere embed-english-v3 uses 1024 dimensions
+default_metric_type: "COSINE"      # Options: L2, IP, COSINE (COSINE recommended for embeddings)
 
 # Default test settings
-default_duration: "30s"  # e.g., "30s", "1m", "5m"
+default_duration: "30s"            # e.g., "30s", "1m", "5m"
 default_qps_levels: [100, 500, 1000]
 
 # Connection calculation settings
-# Used during load tests to decide how many concurrent connections to open per QPS level.
 # Formula: connections = (QPS × expected_latency_ms) / 1000 × connection_multiplier
 # (values are capped between 5 and 2000 connections).
-#
-# expected_latency_ms: Your typical or target search latency in milliseconds. Used to estimate
-#   how many queries can be in flight at once at a given QPS. Example: at 100 QPS and 75ms
-#   latency, you need roughly (100 × 75)/1000 = 7.5 concurrent requests. Use a value that
-#   matches your cluster (e.g. 50 for very fast, 100 for conservative). Default: 75.0
-#
-# connection_multiplier: Extra factor for headroom (connection overhead, latency variance).
-#   Higher = more connections, lower = fewer. Typical range 1.2–2.0. Default: 1.5
-#
-# Example: 100 QPS, 75ms latency, 1.5x → ~12 connections. 500 QPS → ~56 connections.
 connection_multiplier: 1.5
 expected_latency_ms: 75.0
 
 # Test parameters
 warmup_queries: 100
-top_k: 10
-search_level: 1
-filter_expression: ""  # Optional filter expression, e.g., "id > 1000"
-output_fields: ["id"]  # Fields to return in search results
+top_k: 100                         # Use 100 for meaningful recall@100 and NDCG@100 metrics
+search_level: 1                    # 1-10, higher = more accurate but slower
+filter_expression: ""              # Optional filter expression, e.g., "id > 1000"
+output_fields: []                  # Fields to return (empty = auto-detect ID field)
 
 # Seed parameters
-seed_vector_count: 2000000  # Number of vectors to seed (default: 2,000,000)
-seed_vector_dim: 768        # Vector dimension for seeding (default: 768)
-seed_batch_size: 15000      # Batch size for seeding (default: 15,000)
+# For BEIR datasets with human-labeled relevance judgments, use:
+#   seed_source: "beir:fiqa"       (57k docs, ~2.6 relevant/query)
+#   seed_source: "beir:trec-covid" (171k docs, ~500 relevant/query)
+#   seed_source: "beir:quora"      (522k docs, ~1.5 relevant/query)
+# For synthetic data, use:
+#   seed_source: "synthetic"
+seed_vector_count: 1000000         # Number of vectors to seed
+seed_vector_dim: 1024              # Vector dimension (1024 for Cohere embed-english-v3)
+seed_batch_size: 15000             # Batch size for seeding
+seed_source: "synthetic"           # Data source: "synthetic", "cohere", or "beir:<dataset>"
 
 # Logging and observability
-log_level: "INFO"           # Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
-log_format: "text"          # Log format: text or json (default: text)
-output_directory: ""        # Default export directory (default: current directory)
-max_retries: 3              # Maximum retries for failed operations (default: 3)
-timeout: "30s"              # Global timeout for operations (default: 30s)
+log_level: "INFO"                  # Log level: DEBUG, INFO, WARN, ERROR
+log_format: "text"                 # Log format: text or json
+output_directory: ""               # Default export directory (default: current directory)
+max_retries: 3                     # Maximum retries for failed operations
+timeout: "30s"                     # Global timeout for operations
