@@ -90,12 +90,13 @@ go build -o zilliz-loadtest ./cmd/zilliz-loadtest
 
 Use BEIR datasets for **true search quality metrics** with human-labeled relevance:
 
-| Dataset | Size | Domain |
-|---------|------|--------|
-| `beir:fiqa` | 57K | Finance |
-| `beir:trec-covid` | 171K | Medical |
-| `beir:scifact` | 5K | Science |
-| `beir:nfcorpus` | 4K | Health |
+| Dataset | Size | Domain | Relevant/Query |
+|---------|------|--------|----------------|
+| `beir:fiqa` | 57K | Finance | ~2.6 |
+| `beir:trec-covid` | 171K | Medical | ~500 |
+| `beir:quora` | 522K | Q&A | ~1.5 |
+| `beir:scifact` | 5K | Science | ~1.1 |
+| `beir:nfcorpus` | 4K | Health | ~38 |
 
 ```bash
 # Seed BEIR dataset (auto-detects COSINE metric, 1024 dims)
@@ -115,35 +116,34 @@ For large-scale performance testing with 8.8M MS MARCO passages:
 
 ## Search Quality Metrics
 
+All metrics are computed at **@100** (top 100 results) for meaningful comparisons.
+
 | Metric | Definition | Ground Truth |
 |--------|-----------|--------------|
-| **Math Recall** | % of exact KNN neighbors found by ANN index | Brute-force search |
-| **Biz Recall** | % of human-relevant docs retrieved | Human qrels |
-| **NDCG** | Normalized Discounted Cumulative Gain (rank-aware) | Human qrels |
+| **Math Recall@100** | % of exact KNN neighbors found by ANN index | Brute-force search |
+| **Biz Recall@100** | % of human-relevant docs retrieved | Human qrels |
+| **NDCG@100** | Normalized Discounted Cumulative Gain (rank-aware) | Human qrels |
 
-**Example output:**
-```
-QPS | P50(ms) | Success% | Math Recall | Biz Recall |   NDCG
-----+---------+----------+-------------+------------+--------
-10  |   54.00 |   100.0% |      96.90% |     54.53% | 0.4521
-```
+**Example results by dataset:**
+| Dataset | Docs | Recall@100 | NDCG@100 |
+|---------|------|------------|----------|
+| fiqa | 57K | 76% | 0.55 |
+| trec-covid | 171K | 14% | 0.72 |
+| quora | 522K | 99% | 0.93 |
 
 **What the metrics tell you:**
 - **Math Recall 97%**: Index finds 97% of exact nearest neighbors
-- **Biz Recall 55%**: Only 55% of human-relevant docs found
-- **NDCG 0.45**: Rank-aware relevance score (1.0 = perfect ranking)
+- **Biz Recall**: Varies by dataset (depends on relevant docs per query)
+- **NDCG 0.72+**: Good rank-aware relevance (1.0 = perfect ranking)
 
-**Search level impact:**
+**Search level impact (fiqa dataset @100):**
 ```
-Level 1:  Math Recall 85%,  Biz Recall 54%,  NDCG 0.42
-Level 3:  Math Recall 95%,  Biz Recall 54%,  NDCG 0.44
-Level 5:  Math Recall 99%,  Biz Recall 54%,  NDCG 0.45
-Level 10: Math Recall 100%, Biz Recall 54%,  NDCG 0.45
+Level 1:  Math Recall 85%,  Biz Recall 76%,  NDCG 0.55
+Level 5:  Math Recall 95%,  Biz Recall 76%,  NDCG 0.55
+Level 10: Math Recall 99%,  Biz Recall 76%,  NDCG 0.55
 ```
 
-Higher search levels improve Math Recall (index accuracy) but Biz Recall stays constant - that's determined by the embedding model quality, not the index.
-   - Use case: Evaluate real-world search quality and user satisfaction
-   - Example: 85% business recall means 85% of relevant docs were returned
+Higher search levels improve Math Recall (index accuracy) but Biz Recall and NDCG stay constant - those are determined by the embedding model quality, not the index.
 
 **Why This Matters:**
 - Random vectors don't reflect real data distributions or user queries
@@ -191,17 +191,17 @@ You can specify a different config file location using the `--config` flag:
 api_key: "your-api-key-here"
 database_url: "https://your-cluster.zillizcloud.com"
 default_collection: "my_collection"
-default_vector_dim: 768
-default_metric_type: "L2"
+default_vector_dim: 1024              # Cohere embed-english-v3 uses 1024
+default_metric_type: "COSINE"         # COSINE recommended for embeddings
 default_duration: "30s"
 default_qps_levels: [100, 500, 1000]
 connection_multiplier: 1.5
 expected_latency_ms: 75.0
 warmup_queries: 100
-top_k: 10
+top_k: 100                            # Use 100 for meaningful recall@100/NDCG@100
 search_level: 1
 filter_expression: ""
-output_fields: ["id"]
+output_fields: []                     # Empty = auto-detect ID field
 ```
 
 ### Environment Variables
