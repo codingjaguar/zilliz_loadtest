@@ -33,7 +33,7 @@ cp configs/config.yaml.example configs/config.yaml
 | Metric | Description |
 |--------|-------------|
 | **P50/P90/P95/P99** | Latency percentiles (ms) |
-| **Math Recall@100** | ANN accuracy vs level-10 search |
+| **Math Recall@100** | ANN accuracy vs KNN ground truth |
 | **Biz Recall@100** | Relevant docs found vs human judgments |
 | **NDCG@100** | Rank-aware relevance score |
 
@@ -80,9 +80,16 @@ Load Test Results
 ===============================================================================================================
 QPS    | Level | P50(ms) | P90(ms) | P95(ms) | P99(ms) | Avg(ms) | Min(ms) | Max(ms) | Success% | Errors | Math Recall | Biz Recall |    NDCG
 -----------------------------------------------------------------------------------------------------------------------
-100    |     1 |   45.30 |   62.10 |   68.50 |   92.10 |   48.20 |   13.10 |  245.30 |   100.0% |      0 |      96.50% |     76.20% |  0.5521
-500    |     1 |   51.20 |   75.40 |   88.90 |  128.60 |   55.10 |   16.30 |  462.10 |    99.8% |      1 |      95.80% |     76.10% |  0.5518
+100    |     1 |   45.30 |   62.10 |   68.50 |   92.10 |   48.20 |   13.10 |  245.30 |   100.0% |      0 |      85.20% |     76.20% |  0.5521
+100    |     5 |   52.10 |   71.40 |   78.20 |  105.30 |   55.80 |   14.20 |  268.40 |   100.0% |      0 |      95.80% |     76.20% |  0.5521
+100    |    10 |   68.50 |   92.30 |  102.10 |  138.70 |   72.40 |   18.90 |  312.60 |   100.0% |      0 |      99.90% |     76.20% |  0.5521
 ===============================================================================================================
+
+Metrics:
+  Level:       Search accuracy level (1-10, higher = more accurate, slower)
+  Math Recall: ANN accuracy vs KNN ground truth
+  Biz Recall:  Relevant docs found vs human judgments (qrels)
+  NDCG:        Normalized Discounted Cumulative Gain (rank-aware relevance)
 ```
 
 ## Flags
