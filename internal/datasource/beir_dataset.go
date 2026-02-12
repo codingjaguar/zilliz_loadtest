@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"zilliz-loadtest/internal/logger"
 
@@ -23,46 +24,163 @@ type BEIRDataset struct {
 
 // Available BEIR datasets with Cohere embed-english-v3 embeddings (1024 dimensions)
 var BEIRDatasets = map[string]BEIRDataset{
+	// --- Original datasets ---
 	"fiqa": {
 		Name:       "fiqa",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 57638,
 		MetricType: entity.COSINE,
 	},
 	"nfcorpus": {
 		Name:       "nfcorpus",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 3633,
 		MetricType: entity.COSINE,
 	},
 	"scifact": {
 		Name:       "scifact",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 5183,
 		MetricType: entity.COSINE,
 	},
 	"trec-covid": {
 		Name:       "trec-covid",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 171332,
 		MetricType: entity.COSINE,
 	},
 	"arguana": {
 		Name:       "arguana",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 8674,
 		MetricType: entity.COSINE,
 	},
 	"scidocs": {
 		Name:       "scidocs",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 25657,
 		MetricType: entity.COSINE,
 	},
 	"quora": {
 		Name:       "quora",
-		VectorDim:  1024, // Cohere embed-english-v3
+		VectorDim:  1024,
 		CorpusSize: 522931,
+		MetricType: entity.COSINE,
+	},
+	// --- Additional BEIR datasets ---
+	"webis-touche2020": {
+		Name:       "webis-touche2020",
+		VectorDim:  1024,
+		CorpusSize: 382545,
+		MetricType: entity.COSINE,
+	},
+	"robust04": {
+		Name:       "robust04",
+		VectorDim:  1024,
+		CorpusSize: 528155,
+		MetricType: entity.COSINE,
+	},
+	"trec-news": {
+		Name:       "trec-news",
+		VectorDim:  1024,
+		CorpusSize: 594977,
+		MetricType: entity.COSINE,
+	},
+	"nq": {
+		Name:       "nq",
+		VectorDim:  1024,
+		CorpusSize: 2681468,
+		MetricType: entity.COSINE,
+	},
+	"hotpotqa": {
+		Name:       "hotpotqa",
+		VectorDim:  1024,
+		CorpusSize: 5233329,
+		MetricType: entity.COSINE,
+	},
+	"fever": {
+		Name:       "fever",
+		VectorDim:  1024,
+		CorpusSize: 5416568,
+		MetricType: entity.COSINE,
+	},
+	"climate-fever": {
+		Name:       "climate-fever",
+		VectorDim:  1024,
+		CorpusSize: 5416593,
+		MetricType: entity.COSINE,
+	},
+	// --- CQADupStack subforums ---
+	"cqadupstack-android": {
+		Name:       "cqadupstack-android",
+		VectorDim:  1024,
+		CorpusSize: 22998,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-english": {
+		Name:       "cqadupstack-english",
+		VectorDim:  1024,
+		CorpusSize: 40221,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-gaming": {
+		Name:       "cqadupstack-gaming",
+		VectorDim:  1024,
+		CorpusSize: 45301,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-gis": {
+		Name:       "cqadupstack-gis",
+		VectorDim:  1024,
+		CorpusSize: 37637,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-mathematica": {
+		Name:       "cqadupstack-mathematica",
+		VectorDim:  1024,
+		CorpusSize: 16705,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-physics": {
+		Name:       "cqadupstack-physics",
+		VectorDim:  1024,
+		CorpusSize: 38316,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-programmers": {
+		Name:       "cqadupstack-programmers",
+		VectorDim:  1024,
+		CorpusSize: 32176,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-stats": {
+		Name:       "cqadupstack-stats",
+		VectorDim:  1024,
+		CorpusSize: 42269,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-text": {
+		Name:       "cqadupstack-text",
+		VectorDim:  1024,
+		CorpusSize: 68184,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-unix": {
+		Name:       "cqadupstack-unix",
+		VectorDim:  1024,
+		CorpusSize: 47382,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-webmasters": {
+		Name:       "cqadupstack-webmasters",
+		VectorDim:  1024,
+		CorpusSize: 17405,
+		MetricType: entity.COSINE,
+	},
+	"cqadupstack-wordpress": {
+		Name:       "cqadupstack-wordpress",
+		VectorDim:  1024,
+		CorpusSize: 48605,
 		MetricType: entity.COSINE,
 	},
 }
@@ -71,9 +189,22 @@ var BEIRDatasets = map[string]BEIRDataset{
 func GetBEIRDataset(name string) (*BEIRDataset, error) {
 	dataset, ok := BEIRDatasets[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown BEIR dataset: %s (available: fiqa, nfcorpus, scifact, trec-covid, arguana, scidocs, quora)", name)
+		names := make([]string, 0, len(BEIRDatasets))
+		for k := range BEIRDatasets {
+			names = append(names, k)
+		}
+		return nil, fmt.Errorf("unknown BEIR dataset: %s (available: %s)", name, strings.Join(names, ", "))
 	}
 	return &dataset, nil
+}
+
+// ListBEIRDatasets returns all available BEIR dataset names
+func ListBEIRDatasets() []string {
+	names := make([]string, 0, len(BEIRDatasets))
+	for k := range BEIRDatasets {
+		names = append(names, k)
+	}
+	return names
 }
 
 // BEIRDataLoader handles loading BEIR datasets with Cohere embeddings
@@ -124,32 +255,55 @@ func (l *BEIRDataLoader) GetQrelsParquetPath(split string) string {
 	return filepath.Join(l.cacheDir, filename)
 }
 
-// EnsureCorpusFile downloads the corpus parquet file if not cached
+// EnsureCorpusFile downloads the corpus parquet file(s) if not cached.
+// For small datasets, returns a single file. For large datasets with multiple shards,
+// downloads all shards and returns the first one (use EnsureCorpusFiles for all).
 func (l *BEIRDataLoader) EnsureCorpusFile() (string, error) {
-	parquetPath := l.GetCorpusParquetPath()
-
-	if info, err := os.Stat(parquetPath); err == nil {
-		logger.Info("BEIR corpus file already cached",
-			"path", parquetPath,
-			"size_mb", info.Size()/1024/1024)
-		return parquetPath, nil
+	files, err := l.EnsureCorpusFiles()
+	if err != nil {
+		return "", err
 	}
+	return files[0], nil
+}
 
+// EnsureCorpusFiles downloads all corpus parquet shard files if not cached.
+// Automatically detects the number of shards by trying sequential file numbers.
+func (l *BEIRDataLoader) EnsureCorpusFiles() ([]string, error) {
 	// Ensure cache directory exists
 	if err := os.MkdirAll(l.cacheDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create cache directory: %w", err)
+		return nil, fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	// Download from HuggingFace
-	// BEIR corpus files are named 0000.parquet (or similar numbered files)
-	url := fmt.Sprintf("%s/%s/corpus/0000.parquet", COHERE_BASE_URL, l.datasetName)
-	logger.Info("Downloading BEIR corpus", "dataset", l.datasetName, "url", url)
+	var paths []string
+	for shard := 0; ; shard++ {
+		filename := fmt.Sprintf("beir-%s-corpus-%04d.parquet", l.datasetName, shard)
+		parquetPath := filepath.Join(l.cacheDir, filename)
 
-	if err := downloadFile(url, parquetPath); err != nil {
-		return "", fmt.Errorf("failed to download corpus: %w", err)
+		if info, err := os.Stat(parquetPath); err == nil {
+			logger.Info("BEIR corpus shard already cached",
+				"path", parquetPath,
+				"size_mb", info.Size()/1024/1024,
+				"shard", shard)
+			paths = append(paths, parquetPath)
+			continue
+		}
+
+		// Try downloading from HuggingFace
+		url := fmt.Sprintf("%s/%s/corpus/%04d.parquet", COHERE_BASE_URL, l.datasetName, shard)
+		logger.Info("Downloading BEIR corpus shard", "dataset", l.datasetName, "shard", shard, "url", url)
+
+		if err := downloadFile(url, parquetPath); err != nil {
+			if shard == 0 {
+				return nil, fmt.Errorf("failed to download corpus: %w", err)
+			}
+			// No more shards available - this is expected
+			logger.Info("Found all corpus shards", "dataset", l.datasetName, "total_shards", shard)
+			break
+		}
+		paths = append(paths, parquetPath)
 	}
 
-	return parquetPath, nil
+	return paths, nil
 }
 
 // EnsureQueriesFile downloads the queries parquet file if not cached

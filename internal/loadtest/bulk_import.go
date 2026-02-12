@@ -714,15 +714,20 @@ func SeedDatabaseWithBEIR(apiKey, databaseURL, collection, datasetName string, b
 		return err
 	}
 
-	// Download corpus if needed
-	corpusPath, err := loader.EnsureCorpusFile()
+	// Download corpus file(s) if needed - supports multi-shard datasets
+	corpusPaths, err := loader.EnsureCorpusFiles()
 	if err != nil {
-		return fmt.Errorf("failed to ensure corpus file: %w", err)
+		return fmt.Errorf("failed to ensure corpus files: %w", err)
 	}
 
-	// Stream data into collection
-	if err := streamBEIRCorpus(ctx, milvusClient, apiKey, databaseURL, collection, corpusPath, batchSize); err != nil {
-		return fmt.Errorf("failed to stream corpus: %w", err)
+	// Stream data from all corpus shard files into collection
+	for i, corpusPath := range corpusPaths {
+		if len(corpusPaths) > 1 {
+			logger.Info("Streaming corpus shard", "shard", i+1, "total", len(corpusPaths))
+		}
+		if err := streamBEIRCorpus(ctx, milvusClient, apiKey, databaseURL, collection, corpusPath, batchSize); err != nil {
+			return fmt.Errorf("failed to stream corpus shard %d: %w", i, err)
+		}
 	}
 
 	// Load collection
